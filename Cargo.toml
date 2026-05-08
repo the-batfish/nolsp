@@ -1,8 +1,9 @@
 [package]
 name = "nolsp"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 
 [dependencies]
+dashmap = "6.1.0"
 tokio = {version = "1.52.1", features = ["macros", "rt-multi-thread", "io-std"]}
 tower-lsp = "0.20.0"
