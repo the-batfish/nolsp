@@ -1,4 +1,5 @@
 mod parser;
+mod config;
 
 use parser::{ChunkSymbolKind, ChunkSymbols, parse_chunk_symbols};
 
