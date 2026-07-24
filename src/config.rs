@@ -44,3 +44,35 @@ impl NolspConfig {
         self.servers.get(ext)
     }
 }
+
+pub fn load_config(workspace_root: Option<&Path>) -> NolspConfig {
+
+    // Search for a workspace config first
+    if let Some(root) = workspace_root {
+        for filename in &[".nolsp.toml", "nolsp.toml"] {
+            let path = root.join(filename);
+            if path.exists() {
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    if let Ok(config) = toml::from_str::<NolspConfig>(&content) {
+                        return config.with_defaults();
+                    }
+                }
+            }
+        }
+    }
+
+    // Search and try for a global config
+    if let Ok(home) = std::env::var("HOME") {
+        let global_path = Path::new(&home).join(".config").join("nolsp").join("config.toml");
+        if global_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&global_path) {
+                if let Ok(config) = toml::from_str::<NolspConfig>(&content) {
+                    return config.with_defaults();
+                }
+            }
+        }
+    }
+
+    // Fallback to defaults
+    NolspConfig::default().with_defaults() 
+}
