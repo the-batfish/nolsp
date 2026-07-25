@@ -19,9 +19,9 @@ fn get_semantic_tokens_legend() -> SemanticTokensLegend {
 #[derive(Debug)]
 struct Backend {
     client: Client,
-
     document_map: DashMap<Url, String>,
     workspace_root: std::sync::Mutex<Option<std::path::PathBuf>>,
+    config: std::sync::RwLock<config::NolspConfig>,
 }
 
 #[tower_lsp::async_trait]
@@ -38,9 +38,17 @@ impl LanguageServer for Backend {
             params.root_uri.and_then(|uri| uri.to_file_path().ok())
         }.or_else(|| std::env::current_dir().ok());
 
-        if let Some(path) = root_path {
+        // Workspace root detection
+        if let Some(path) = &root_path {
             let mut root = self.workspace_root.lock().unwrap();
-            *root = Some(path);
+            *root = Some(path.clone());
+        }
+
+        // Load config and store it in state 
+        let loaded_config = config::load_config(root_path.as_deref());
+        {
+            let mut cfg = self.config.write().unwrap();
+            *cfg = loaded_config;
         }
 
         Ok(InitializeResult {
@@ -260,6 +268,7 @@ async fn main() {
         client,
         document_map: DashMap::new(),
         workspace_root: std::sync::Mutex::new(None),
+        config: std::sync::RwLock::new(config::NolspConfig::default()),
     });
     Server::new(stdin, stdout, socket).serve(service).await;
 }
