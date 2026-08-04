@@ -35,37 +35,55 @@ fn translate_completion_item(
     if let Some(text_edit) = &mut item.text_edit {
         match text_edit {
             CompletionTextEdit::Edit(edit) => {
-                if let Some(orig_line) =
-                    sub_client.map_to_original(doc_uri, edit.range.start.line as usize)
-                {
+                if let Some((orig_line, orig_col)) = sub_client.map_to_original(
+                    doc_uri,
+                    edit.range.start.line as usize,
+                    edit.range.start.character as usize,
+                ) {
                     edit.range.start.line = orig_line as u32;
+                    edit.range.start.character = orig_col as u32;
                 }
-                if let Some(orig_line) =
-                    sub_client.map_to_original(doc_uri, edit.range.end.line as usize)
-                {
+                if let Some((orig_line, orig_col)) = sub_client.map_to_original(
+                    doc_uri,
+                    edit.range.end.line as usize,
+                    edit.range.end.character as usize,
+                ) {
                     edit.range.end.line = orig_line as u32;
+                    edit.range.end.character = orig_col as u32;
                 }
             }
             CompletionTextEdit::InsertAndReplace(ir) => {
-                if let Some(orig_line) =
-                    sub_client.map_to_original(doc_uri, ir.insert.start.line as usize)
-                {
+                if let Some((orig_line, orig_col)) = sub_client.map_to_original(
+                    doc_uri,
+                    ir.insert.start.line as usize,
+                    ir.insert.start.character as usize,
+                ) {
                     ir.insert.start.line = orig_line as u32;
+                    ir.insert.start.character = orig_col as u32;
                 }
-                if let Some(orig_line) =
-                    sub_client.map_to_original(doc_uri, ir.insert.end.line as usize)
-                {
+                if let Some((orig_line, orig_col)) = sub_client.map_to_original(
+                    doc_uri,
+                    ir.insert.end.line as usize,
+                    ir.insert.end.character as usize,
+                ) {
                     ir.insert.end.line = orig_line as u32;
+                    ir.insert.end.character = orig_col as u32;
                 }
-                if let Some(orig_line) =
-                    sub_client.map_to_original(doc_uri, ir.replace.start.line as usize)
-                {
+                if let Some((orig_line, orig_col)) = sub_client.map_to_original(
+                    doc_uri,
+                    ir.replace.start.line as usize,
+                    ir.replace.start.character as usize,
+                ) {
                     ir.replace.start.line = orig_line as u32;
+                    ir.replace.start.character = orig_col as u32;
                 }
-                if let Some(orig_line) =
-                    sub_client.map_to_original(doc_uri, ir.replace.end.line as usize)
-                {
+                if let Some((orig_line, orig_col)) = sub_client.map_to_original(
+                    doc_uri,
+                    ir.replace.end.line as usize,
+                    ir.replace.end.character as usize,
+                ) {
                     ir.replace.end.line = orig_line as u32;
+                    ir.replace.end.character = orig_col as u32;
                 }
             }
         }
@@ -73,15 +91,21 @@ fn translate_completion_item(
 
     if let Some(ref mut edits) = item.additional_text_edits {
         for edit in edits {
-            if let Some(orig_line) =
-                sub_client.map_to_original(doc_uri, edit.range.start.line as usize)
-            {
+            if let Some((orig_line, orig_col)) = sub_client.map_to_original(
+                doc_uri,
+                edit.range.start.line as usize,
+                edit.range.start.character as usize,
+            ) {
                 edit.range.start.line = orig_line as u32;
+                edit.range.start.character = orig_col as u32;
             }
-            if let Some(orig_line) =
-                sub_client.map_to_original(doc_uri, edit.range.end.line as usize)
-            {
+            if let Some((orig_line, orig_col)) = sub_client.map_to_original(
+                doc_uri,
+                edit.range.end.line as usize,
+                edit.range.end.character as usize,
+            ) {
                 edit.range.end.line = orig_line as u32;
+                edit.range.end.character = orig_col as u32;
             }
         }
     }
@@ -343,8 +367,10 @@ impl LanguageServer for Backend {
         let line = params.text_document_position_params.position.line;
         let character = params.text_document_position_params.position.character;
 
-        let virtual_pos = self.sub_lsp_manager.find_virtual_pos(line as usize);
-        let (sub_client, doc_uri, virtual_line) = match virtual_pos {
+        let virtual_pos = self
+            .sub_lsp_manager
+            .find_virtual_pos(line as usize, character as usize);
+        let (sub_client, doc_uri, virtual_line, virtual_char) = match virtual_pos {
             Some(pos) => pos,
             None => {
                 return Ok(None);
@@ -357,7 +383,7 @@ impl LanguageServer for Backend {
             },
             "position": {
                 "line": virtual_line,
-                "character": character
+                "character": virtual_char
             }
         });
 
@@ -382,15 +408,21 @@ impl LanguageServer for Backend {
             .map_err(|e| tower_lsp::jsonrpc::Error::invalid_params(e.to_string()))?;
 
         if let Some(ref mut range) = hover.range {
-            if let Some(orig_start_line) =
-                sub_client.map_to_original(&doc_uri, range.start.line as usize)
-            {
+            if let Some((orig_start_line, orig_start_col)) = sub_client.map_to_original(
+                &doc_uri,
+                range.start.line as usize,
+                range.start.character as usize,
+            ) {
                 range.start.line = orig_start_line as u32;
+                range.start.character = orig_start_col as u32;
             }
-            if let Some(orig_end_line) =
-                sub_client.map_to_original(&doc_uri, range.end.line as usize)
-            {
+            if let Some((orig_end_line, orig_end_col)) = sub_client.map_to_original(
+                &doc_uri,
+                range.end.line as usize,
+                range.end.character as usize,
+            ) {
                 range.end.line = orig_end_line as u32;
+                range.end.character = orig_end_col as u32;
             }
         }
 
@@ -492,8 +524,10 @@ impl LanguageServer for Backend {
         }
 
         // Standard code chunk completion forwarding to sub-LSP
-        let virtual_pos = self.sub_lsp_manager.find_virtual_pos(line as usize);
-        let (sub_client, doc_uri, virtual_line) = match virtual_pos {
+        let virtual_pos = self
+            .sub_lsp_manager
+            .find_virtual_pos(line as usize, character as usize);
+        let (sub_client, doc_uri, virtual_line, virtual_char) = match virtual_pos {
             Some(pos) => pos,
             None => {
                 return Ok(None);
@@ -506,7 +540,7 @@ impl LanguageServer for Backend {
             },
             "position": {
                 "line": virtual_line,
-                "character": character
+                "character": virtual_char
             },
             "context": params.context
         });

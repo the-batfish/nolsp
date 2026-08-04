@@ -17,7 +17,7 @@ pub struct SubLspClient {
     pub pending_requests: DashMap<Value, oneshot::Sender<Value>>,
     pub next_id: std::sync::atomic::AtomicU64,
     pub opened_documents: DashMap<Url, i32>,
-    pub line_mappings: DashMap<Url, Vec<usize>>,
+    pub line_mappings: DashMap<Url, Vec<(usize, isize)>>,
 }
 
 #[derive(Default)]
@@ -300,7 +300,7 @@ impl SubLspClient {
         &self,
         doc_uri: Url,
         doc_path: &Path,
-        mapping: Vec<usize>,
+        mapping: Vec<(usize, isize)>,
     ) -> Result<(), String> {
         self.line_mappings.insert(doc_uri.clone(), mapping);
         let content = tokio::fs::read_to_string(doc_path)
@@ -348,14 +348,29 @@ impl SubLspClient {
         Ok(())
     }
 
-    pub fn map_to_virtual(&self, doc_uri: &Url, original_line: usize) -> Option<usize> {
+    pub fn map_to_virtual(
+        &self,
+        doc_uri: &Url,
+        original_line: usize,
+        original_col: usize,
+    ) -> Option<(usize, usize)> {
         let mapping = self.line_mappings.get(doc_uri)?;
-        mapping.iter().position(|&l| l == original_line)
+        let pos = mapping.iter().position(|&(l, _)| l == original_line)?;
+        let (_, offset) = mapping.get(pos)?;
+        let virt_col = (original_col as isize + offset).max(0) as usize;
+        Some((pos, virt_col))
     }
 
-    pub fn map_to_original(&self, doc_uri: &Url, virtual_line: usize) -> Option<usize> {
+    pub fn map_to_original(
+        &self,
+        doc_uri: &Url,
+        virtual_line: usize,
+        virtual_col: usize,
+    ) -> Option<(usize, usize)> {
         let mapping = self.line_mappings.get(doc_uri)?;
-        mapping.get(virtual_line).copied()
+        let &(orig_line, offset) = mapping.get(virtual_line)?;
+        let orig_col = (virtual_col as isize - offset).max(0) as usize;
+        Some((orig_line, orig_col))
     }
 }
 
@@ -427,7 +442,7 @@ impl SubLspManager {
         client: Client,
         config: &crate::config::NolspConfig,
         capabilities: ClientCapabilities,
-        mappings: HashMap<PathBuf, Vec<usize>>,
+        mappings: HashMap<PathBuf, Vec<(usize, isize)>>,
     ) {
         use std::collections::HashSet;
 
@@ -492,14 +507,16 @@ impl SubLspManager {
     pub fn find_virtual_pos(
         &self,
         original_line: usize,
-    ) -> Option<(Arc<SubLspClient>, Url, usize)> {
+        original_col: usize,
+    ) -> Option<(Arc<SubLspClient>, Url, usize, usize)> {
         for entry in self.active_clients.iter() {
             let client = entry.value();
             for doc_entry in client.line_mappings.iter() {
                 let doc_uri = doc_entry.key();
-                let mapping = doc_entry.value();
-                if let Some(pos) = mapping.iter().position(|&l| l == original_line) {
-                    return Some((client.clone(), doc_uri.clone(), pos));
+                if let Some((v_line, v_col)) =
+                    client.map_to_virtual(doc_uri, original_line, original_col)
+                {
+                    return Some((client.clone(), doc_uri.clone(), v_line, v_col));
                 }
             }
         }
