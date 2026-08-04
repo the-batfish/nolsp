@@ -27,6 +27,66 @@ struct Backend {
     client_capabilities: std::sync::RwLock<Option<ClientCapabilities>>,
 }
 
+fn translate_completion_item(
+    item: &mut CompletionItem,
+    sub_client: &sub_lsp::SubLspClient,
+    doc_uri: &Url,
+) {
+    if let Some(text_edit) = &mut item.text_edit {
+        match text_edit {
+            CompletionTextEdit::Edit(edit) => {
+                if let Some(orig_line) =
+                    sub_client.map_to_original(doc_uri, edit.range.start.line as usize)
+                {
+                    edit.range.start.line = orig_line as u32;
+                }
+                if let Some(orig_line) =
+                    sub_client.map_to_original(doc_uri, edit.range.end.line as usize)
+                {
+                    edit.range.end.line = orig_line as u32;
+                }
+            }
+            CompletionTextEdit::InsertAndReplace(ir) => {
+                if let Some(orig_line) =
+                    sub_client.map_to_original(doc_uri, ir.insert.start.line as usize)
+                {
+                    ir.insert.start.line = orig_line as u32;
+                }
+                if let Some(orig_line) =
+                    sub_client.map_to_original(doc_uri, ir.insert.end.line as usize)
+                {
+                    ir.insert.end.line = orig_line as u32;
+                }
+                if let Some(orig_line) =
+                    sub_client.map_to_original(doc_uri, ir.replace.start.line as usize)
+                {
+                    ir.replace.start.line = orig_line as u32;
+                }
+                if let Some(orig_line) =
+                    sub_client.map_to_original(doc_uri, ir.replace.end.line as usize)
+                {
+                    ir.replace.end.line = orig_line as u32;
+                }
+            }
+        }
+    }
+
+    if let Some(ref mut edits) = item.additional_text_edits {
+        for edit in edits {
+            if let Some(orig_line) =
+                sub_client.map_to_original(doc_uri, edit.range.start.line as usize)
+            {
+                edit.range.start.line = orig_line as u32;
+            }
+            if let Some(orig_line) =
+                sub_client.map_to_original(doc_uri, edit.range.end.line as usize)
+            {
+                edit.range.end.line = orig_line as u32;
+            }
+        }
+    }
+}
+
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
@@ -397,25 +457,94 @@ impl LanguageServer for Backend {
             None => return Ok(None),
         };
 
-        let symbols = parse_chunk_symbols(&text);
+        let line = params.text_document_position.position.line;
+        let character = params.text_document_position.position.character;
 
-        let mut completion_items = Vec::new();
-        let mut unique_names = HashSet::new();
+        let doc_lines: Vec<&str> = text.lines().collect();
+        let current_line = doc_lines.get(line as usize).copied().unwrap_or("");
 
-        for symbol in symbols {
-            if let (ChunkSymbolKind::Header, Some(name)) = (symbol.kind, symbol.name) {
-                if unique_names.insert(name.clone()) {
-                    completion_items.push(CompletionItem {
-                        label: name.clone(),
-                        kind: Some(CompletionItemKind::REFERENCE),
-                        detail: Some("Noweb code chunk".to_string()),
-                        insert_text: Some(format!("{}>>", name)),
-                        ..Default::default()
-                    });
+        let char_idx = character as usize;
+        let is_noweb_trigger = if char_idx >= 2 {
+            &current_line[char_idx.saturating_sub(2)..char_idx] == "<<"
+        } else {
+            false
+        };
+
+        if is_noweb_trigger {
+            let symbols = parse_chunk_symbols(&text);
+            let mut completion_items = Vec::new();
+            let mut unique_names = HashSet::new();
+
+            for symbol in symbols {
+                if let (ChunkSymbolKind::Header, Some(name)) = (symbol.kind, symbol.name) {
+                    if unique_names.insert(name.clone()) {
+                        completion_items.push(CompletionItem {
+                            label: name.clone(),
+                            kind: Some(CompletionItemKind::REFERENCE),
+                            detail: Some("Noweb code chunk".to_string()),
+                            insert_text: Some(format!("{}>>", name)),
+                            ..Default::default()
+                        });
+                    }
+                }
+            }
+            return Ok(Some(CompletionResponse::Array(completion_items)));
+        }
+
+        // Standard code chunk completion forwarding to sub-LSP
+        let virtual_pos = self.sub_lsp_manager.find_virtual_pos(line as usize);
+        let (sub_client, doc_uri, virtual_line) = match virtual_pos {
+            Some(pos) => pos,
+            None => {
+                return Ok(None);
+            }
+        };
+
+        let comp_params = serde_json::json!({
+            "textDocument": {
+                "uri": doc_uri
+            },
+            "position": {
+                "line": virtual_line,
+                "character": character
+            },
+            "context": params.context
+        });
+
+        let response = sub_client
+            .send_request("textDocument/completion", comp_params)
+            .await
+            .map_err(|e| tower_lsp::jsonrpc::Error::invalid_params(e))?;
+
+        if let Some(_error) = response.get("error") {
+            return Err(tower_lsp::jsonrpc::Error::internal_error());
+        }
+
+        let result = response
+            .get("result")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        if result.is_null() {
+            return Ok(None);
+        }
+
+        let mut comp_response: CompletionResponse = serde_json::from_value(result)
+            .map_err(|e| tower_lsp::jsonrpc::Error::invalid_params(e.to_string()))?;
+
+        match comp_response {
+            CompletionResponse::Array(ref mut items) => {
+                for item in items {
+                    translate_completion_item(item, &sub_client, &doc_uri);
+                }
+            }
+            CompletionResponse::List(ref mut list) => {
+                for item in &mut list.items {
+                    translate_completion_item(item, &sub_client, &doc_uri);
                 }
             }
         }
-        Ok(Some(CompletionResponse::Array(completion_items)))
+
+        Ok(Some(comp_response))
     }
 }
 
