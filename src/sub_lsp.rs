@@ -347,6 +347,16 @@ impl SubLspClient {
         }
         Ok(())
     }
+
+    pub fn map_to_virtual(&self, doc_uri: &Url, original_line: usize) -> Option<usize> {
+        let mapping = self.line_mappings.get(doc_uri)?;
+        mapping.iter().position(|&l| l == original_line)
+    }
+
+    pub fn map_to_original(&self, doc_uri: &Url, virtual_line: usize) -> Option<usize> {
+        let mapping = self.line_mappings.get(doc_uri)?;
+        mapping.get(virtual_line).copied()
+    }
 }
 
 impl SubLspManager {
@@ -477,6 +487,20 @@ impl SubLspManager {
                 }
             }
         }
+    }
+
+    pub fn find_virtual_pos(&self, original_line: usize) -> Option<(Arc<SubLspClient>, Url, usize)> {
+        for entry in self.active_clients.iter() {
+            let client = entry.value();
+            for doc_entry in client.line_mappings.iter() {
+                let doc_uri = doc_entry.key();
+                let mapping = doc_entry.value();
+                if let Some(pos) = mapping.iter().position(|&l| l == original_line) {
+                    return Some((client.clone(), doc_uri.clone(), pos));
+                }
+            }
+        }
+        None
     }
 
     pub async fn shutdown(&self) {
