@@ -168,8 +168,15 @@ impl LanguageServer for Backend {
                 ),
                 completion_provider: Some(CompletionOptions {
                     resolve_provider: Some(false),
-                    // Tell the editor to trigger completion when the user types '<'
-                    trigger_characters: Some(vec!["<<".to_string()]),
+                    // Tell the editor to trigger completion on these common chars
+                    trigger_characters: Some(vec![
+                        "<".to_string(),
+                        ".".to_string(),
+                        ":".to_string(),
+                        "-".to_string(),
+                        ">".to_string(),
+                        "/".to_string(),
+                    ]),
                     work_done_progress_options: Default::default(),
                     all_commit_characters: None,
                     completion_item: None,
