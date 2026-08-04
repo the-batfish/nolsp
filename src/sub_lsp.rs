@@ -489,7 +489,10 @@ impl SubLspManager {
         }
     }
 
-    pub fn find_virtual_pos(&self, original_line: usize) -> Option<(Arc<SubLspClient>, Url, usize)> {
+    pub fn find_virtual_pos(
+        &self,
+        original_line: usize,
+    ) -> Option<(Arc<SubLspClient>, Url, usize)> {
         for entry in self.active_clients.iter() {
             let client = entry.value();
             for doc_entry in client.line_mappings.iter() {

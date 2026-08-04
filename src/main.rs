@@ -279,13 +279,62 @@ impl LanguageServer for Backend {
         });
     }
 
-    async fn hover(&self, _params: HoverParams) -> Result<Option<Hover>> {
-        Ok(Some(Hover {
-            contents: HoverContents::Scalar(MarkedString::String(
-                "Lorem ipsum type shi".to_string(),
-            )),
-            range: None,
-        }))
+    async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
+        let line = params.text_document_position_params.position.line;
+        let character = params.text_document_position_params.position.character;
+
+        let virtual_pos = self.sub_lsp_manager.find_virtual_pos(line as usize);
+        let (sub_client, doc_uri, virtual_line) = match virtual_pos {
+            Some(pos) => pos,
+            None => {
+                return Ok(None);
+            }
+        };
+
+        let hover_params = serde_json::json!({
+            "textDocument": {
+                "uri": doc_uri
+            },
+            "position": {
+                "line": virtual_line,
+                "character": character
+            }
+        });
+
+        let response = sub_client
+            .send_request("textDocument/hover", hover_params)
+            .await
+            .map_err(|e| tower_lsp::jsonrpc::Error::invalid_params(e))?;
+
+        if let Some(_error) = response.get("error") {
+            return Err(tower_lsp::jsonrpc::Error::internal_error());
+        }
+
+        let result = response
+            .get("result")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        if result.is_null() {
+            return Ok(None);
+        }
+
+        let mut hover: Hover = serde_json::from_value(result)
+            .map_err(|e| tower_lsp::jsonrpc::Error::invalid_params(e.to_string()))?;
+
+        if let Some(ref mut range) = hover.range {
+            if let Some(orig_start_line) =
+                sub_client.map_to_original(&doc_uri, range.start.line as usize)
+            {
+                range.start.line = orig_start_line as u32;
+            }
+            if let Some(orig_end_line) =
+                sub_client.map_to_original(&doc_uri, range.end.line as usize)
+            {
+                range.end.line = orig_end_line as u32;
+            }
+        }
+
+        Ok(Some(hover))
     }
 
     async fn semantic_tokens_full(
