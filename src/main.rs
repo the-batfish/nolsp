@@ -109,6 +109,13 @@ fn translate_completion_item(
             }
         }
     }
+
+    let original_data = item.data.clone();
+    item.data = Some(serde_json::json!({
+        "sub_lsp_key": sub_client.ext,
+        "doc_uri": doc_uri,
+        "original_data": original_data,
+    }));
 }
 
 #[tower_lsp::async_trait]
@@ -167,7 +174,7 @@ impl LanguageServer for Backend {
                     ),
                 ),
                 completion_provider: Some(CompletionOptions {
-                    resolve_provider: Some(false),
+                    resolve_provider: Some(true),
                     // Tell the editor to trigger completion on these common chars
                     trigger_characters: Some(vec![
                         "<".to_string(),
@@ -234,9 +241,9 @@ impl LanguageServer for Backend {
             .unwrap_or_default();
 
         tokio::spawn(async move {
-            if let (Some(root), Ok(noweb_file)) = (workspace_root, uri.to_file_path()) {
+            if let (Some(root), Ok(_noweb_file)) = (workspace_root, uri.to_file_path()) {
                 let symbols = parse_chunk_symbols(&text);
-                match parser::create_virtual_docs(&symbols, &root, &noweb_file).await {
+                match parser::create_virtual_docs(&symbols, &root, &text).await {
                     Err(e) => {
                         client
                             .log_message(
@@ -284,9 +291,9 @@ impl LanguageServer for Backend {
                 .unwrap_or_default();
 
             tokio::spawn(async move {
-                if let (Some(root), Ok(noweb_file)) = (workspace_root, uri.to_file_path()) {
+                if let (Some(root), Ok(_noweb_file)) = (workspace_root, uri.to_file_path()) {
                     let symbols = parse_chunk_symbols(&new_text);
-                    match parser::create_virtual_docs(&symbols, &root, &noweb_file).await {
+                    match parser::create_virtual_docs(&symbols, &root, &new_text).await {
                         Err(e) => {
                             client
                                 .log_message(
@@ -339,9 +346,9 @@ impl LanguageServer for Backend {
             .unwrap_or_default();
 
         tokio::spawn(async move {
-            if let (Some(root), Ok(noweb_file)) = (workspace_root, uri.to_file_path()) {
+            if let (Some(root), Ok(_noweb_file)) = (workspace_root, uri.to_file_path()) {
                 let symbols = parse_chunk_symbols(&text);
-                match parser::create_virtual_docs(&symbols, &root, &noweb_file).await {
+                match parser::create_virtual_docs(&symbols, &root, &text).await {
                     Err(e) => {
                         client
                             .log_message(
@@ -587,6 +594,72 @@ impl LanguageServer for Backend {
 
         Ok(Some(comp_response))
     }
+
+    async fn completion_resolve(&self, mut item: CompletionItem) -> Result<CompletionItem> {
+        let metadata = match item.data.as_ref().and_then(|d| d.as_object()) {
+            Some(obj) => obj,
+            None => return Ok(item),
+        };
+
+        let sub_lsp_key = match metadata.get("sub_lsp_key").and_then(|v| v.as_str()) {
+            Some(key) => key.to_string(),
+            None => return Ok(item),
+        };
+
+        let doc_uri_str = match metadata.get("doc_uri").and_then(|v| v.as_str()) {
+            Some(uri) => uri.to_string(),
+            None => return Ok(item),
+        };
+
+        let doc_uri = match Url::parse(&doc_uri_str) {
+            Ok(url) => url,
+            Err(_) => return Ok(item),
+        };
+
+        let original_data = metadata
+            .get("original_data")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+
+        let sub_client = match self.sub_lsp_manager.active_clients.get(&sub_lsp_key) {
+            Some(entry) => entry.value().clone(),
+            None => return Ok(item),
+        };
+
+        // Restore original sub-LSP data payload
+        item.data = if original_data.is_null() {
+            None
+        } else {
+            Some(original_data)
+        };
+
+        let response = sub_client
+            .send_request(
+                "completionItem/resolve",
+                serde_json::to_value(&item).unwrap(),
+            )
+            .await
+            .map_err(|e| tower_lsp::jsonrpc::Error::invalid_params(e))?;
+
+        if let Some(_error) = response.get("error") {
+            return Err(tower_lsp::jsonrpc::Error::internal_error());
+        }
+
+        let result = response
+            .get("result")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        if result.is_null() {
+            return Ok(item);
+        }
+
+        let mut resolved_item: CompletionItem = serde_json::from_value(result)
+            .map_err(|e| tower_lsp::jsonrpc::Error::invalid_params(e.to_string()))?;
+
+        translate_completion_item(&mut resolved_item, &sub_client, &doc_uri);
+
+        Ok(resolved_item)
+    }
 }
 
 #[tokio::main]
@@ -603,4 +676,71 @@ async fn main() {
         client_capabilities: std::sync::RwLock::new(None),
     });
     Server::new(stdin, stdout, socket).serve(service).await;
+}
+
+#[cfg(test)]
+mod main_tests {
+    use super::*;
+    use dashmap::DashMap;
+    use std::sync::Arc;
+    use tower_lsp::lsp_types::*;
+
+    #[tokio::test]
+    async fn test_translate_completion_item() {
+        let mut item = CompletionItem {
+            label: "test".to_string(),
+            text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                range: Range {
+                    start: Position {
+                        line: 0,
+                        character: 10,
+                    },
+                    end: Position {
+                        line: 0,
+                        character: 15,
+                    },
+                },
+                new_text: "replacement".to_string(),
+            })),
+            ..Default::default()
+        };
+
+        // Create a dummy SubLspClient
+        let (stdin_tx, _) = tokio::sync::mpsc::channel(1);
+        let process = Arc::new(tokio::sync::Mutex::new(
+            tokio::process::Command::new("true").spawn().unwrap(),
+        ));
+        let line_mappings = DashMap::new();
+        let doc_uri = Url::parse("file:///virtual/main.rs").unwrap();
+        // Line 0 maps to line 10 in original noweb file, with offset 4
+        line_mappings.insert(doc_uri.clone(), vec![(10, 4)]);
+
+        let sub_client = sub_lsp::SubLspClient {
+            ext: "rs".to_string(),
+            language_id: "rust".to_string(),
+            process,
+            stdin_tx,
+            pending_requests: DashMap::new(),
+            next_id: std::sync::atomic::AtomicU64::new(1),
+            opened_documents: DashMap::new(),
+            line_mappings,
+        };
+
+        translate_completion_item(&mut item, &sub_client, &doc_uri);
+
+        // Verify edit coordinates mapped back correctly
+        if let Some(CompletionTextEdit::Edit(edit)) = item.text_edit {
+            assert_eq!(edit.range.start.line, 10);
+            assert_eq!(edit.range.start.character, 6); // 10 - 4 = 6
+            assert_eq!(edit.range.end.line, 10);
+            assert_eq!(edit.range.end.character, 11); // 15 - 4 = 11
+        } else {
+            panic!("Expected edit");
+        }
+
+        // Verify data wrapped
+        let data = item.data.unwrap();
+        assert_eq!(data["sub_lsp_key"], "rs");
+        assert_eq!(data["doc_uri"], "file:///virtual/main.rs");
+    }
 }

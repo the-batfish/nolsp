@@ -62,7 +62,7 @@ pub fn parse_chunk_symbols(content: &str) -> Vec<ChunkSymbols> {
 pub async fn create_virtual_docs(
     symbols: &Vec<ChunkSymbols>,
     workspace_root: &Path,
-    noweb_file: &Path,
+    noweb_content: &str,
 ) -> Result<HashMap<PathBuf, Vec<(usize, isize)>>, std::io::Error> {
     // Gather up all the chunk names and keep only the unique ones
     let mut unique_names = HashSet::<String>::new();
@@ -79,8 +79,12 @@ pub async fn create_virtual_docs(
         .filter(|s| Path::new(s).extension().is_some())
         .collect();
 
-    // Read noweb file to compare indentation
-    let noweb_content = fs::read_to_string(noweb_file).await?;
+    // Write noweb in-memory content to a temporary file in .nolsp/tmp/temp.nw
+    let temp_dir = workspace_root.join(".nolsp").join("tmp");
+    fs::create_dir_all(&temp_dir).await?;
+    let temp_nw_file = temp_dir.join("temp.nw");
+    fs::write(&temp_nw_file, noweb_content).await?;
+
     let noweb_lines: Vec<&str> = noweb_content.lines().collect();
 
     let mut mappings = HashMap::new();
@@ -100,7 +104,7 @@ pub async fn create_virtual_docs(
         let mut child = Command::new("notangle")
             .arg("-L")
             .arg(format!("-R{}", file_name))
-            .arg(noweb_file)
+            .arg(&temp_nw_file)
             .stdout(std::process::Stdio::piped())
             .spawn()?;
 
