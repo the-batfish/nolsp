@@ -1,7 +1,7 @@
-use std::collections::HashSet;
-use std::fs::File;
-use std::path::Path;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use tokio::fs;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
 #[derive(PartialEq, Clone, Copy)]
@@ -57,13 +57,13 @@ pub fn parse_chunk_symbols(content: &str) -> Vec<ChunkSymbols> {
 
 /**
  * Handles creating the virtual directory where all the virtual documents reside for
- * use with language servers.
+ * use with language servers, extracting them using `notangle -L` to build line-mapping tables.
  */
 pub async fn create_virtual_docs(
     symbols: &Vec<ChunkSymbols>,
     workspace_root: &Path,
     noweb_file: &Path,
-) -> Result<(), std::io::Error> {
+) -> Result<HashMap<PathBuf, Vec<usize>>, std::io::Error> {
     // Gather up all the chunk names and keep only the unique ones
     let mut unique_names = HashSet::<String>::new();
 
@@ -79,8 +79,7 @@ pub async fn create_virtual_docs(
         .filter(|s| Path::new(s).extension().is_some())
         .collect();
 
-    // List of all the child processes
-    let mut children = Vec::new();
+    let mut mappings = HashMap::new();
 
     for file_name in unique_file_names {
         // Making the virtual directory where all the virtual documents will live
@@ -94,19 +93,49 @@ pub async fn create_virtual_docs(
             fs::create_dir_all(parent_dir).await?;
         }
 
-        let output_file = File::create(&target_path)?;
-
-        let virtual_doc_child = Command::new("notangle")
+        let mut child = Command::new("notangle")
+            .arg("-L")
             .arg(format!("-R{}", file_name))
             .arg(noweb_file)
-            .stdout(output_file)
+            .stdout(std::process::Stdio::piped())
             .spawn()?;
 
-        children.push(virtual_doc_child);
-    }
+        let stdout = child.stdout.take().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Failed to capture notangle stdout",
+            )
+        })?;
 
-    // Wait for all child processes to complete
-    for mut child in children {
+        let mut clean_file = fs::File::create(&target_path).await?;
+        let mut reader = BufReader::new(stdout).lines();
+
+        let mut line_mapping = Vec::new();
+        let mut current_original_line = 0;
+
+        while let Some(line) = reader.next_line().await? {
+            if line.starts_with("#line ") {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 2 {
+                    if let Ok(num) = parts[1].parse::<usize>() {
+                        current_original_line = num;
+                    }
+                }
+            } else {
+                clean_file.write_all(line.as_bytes()).await?;
+                clean_file.write_all(b"\n").await?;
+
+                let original_line = if current_original_line > 0 {
+                    current_original_line - 1
+                } else {
+                    0
+                };
+                line_mapping.push(original_line);
+
+                current_original_line += 1;
+            }
+        }
+
         let status = child.wait().await?;
         if !status.success() {
             return Err(std::io::Error::other(format!(
@@ -114,7 +143,9 @@ pub async fn create_virtual_docs(
                 status.code()
             )));
         }
+
+        mappings.insert(target_path, line_mapping);
     }
 
-    Ok(())
+    Ok(mappings)
 }

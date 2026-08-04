@@ -1,10 +1,12 @@
-mod parser;
 mod config;
+mod parser;
+mod sub_lsp;
 
 use parser::{ChunkSymbolKind, ChunkSymbols, parse_chunk_symbols};
 
 use dashmap::DashMap;
 use std::collections::HashSet;
+use std::sync::Arc;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
@@ -16,18 +18,18 @@ fn get_semantic_tokens_legend() -> SemanticTokensLegend {
     }
 }
 
-#[derive(Debug)]
 struct Backend {
     client: Client,
     document_map: DashMap<Url, String>,
     workspace_root: std::sync::Mutex<Option<std::path::PathBuf>>,
     config: std::sync::RwLock<config::NolspConfig>,
+    sub_lsp_manager: Arc<sub_lsp::SubLspManager>,
+    client_capabilities: std::sync::RwLock<Option<ClientCapabilities>>,
 }
 
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
-
         let root_path = if let Some(folders) = &params.workspace_folders {
             if let Some(first_folder) = folders.first() {
                 first_folder.uri.to_file_path().ok()
@@ -36,7 +38,8 @@ impl LanguageServer for Backend {
             }
         } else {
             params.root_uri.and_then(|uri| uri.to_file_path().ok())
-        }.or_else(|| std::env::current_dir().ok());
+        }
+        .or_else(|| std::env::current_dir().ok());
 
         // Workspace root detection
         if let Some(path) = &root_path {
@@ -44,11 +47,16 @@ impl LanguageServer for Backend {
             *root = Some(path.clone());
         }
 
-        // Load config and store it in state 
+        // Load config and store it in state
         let loaded_config = config::load_config(root_path.as_deref());
         {
             let mut cfg = self.config.write().unwrap();
             *cfg = loaded_config;
+        }
+
+        {
+            let mut cap = self.client_capabilities.write().unwrap();
+            *cap = Some(params.capabilities);
         }
 
         Ok(InitializeResult {
@@ -61,7 +69,7 @@ impl LanguageServer for Backend {
                         change: Some(TextDocumentSyncKind::FULL),
                         save: Some(SaveOptions::default().into()),
                         ..Default::default()
-                    }
+                    },
                 )),
 
                 semantic_tokens_provider: Some(
@@ -95,6 +103,7 @@ impl LanguageServer for Backend {
     }
 
     async fn shutdown(&self) -> Result<()> {
+        self.sub_lsp_manager.shutdown().await;
 
         let root_path = {
             let guard = self.workspace_root.lock().unwrap();
@@ -124,13 +133,42 @@ impl LanguageServer for Backend {
 
         let workspace_root = self.workspace_root.lock().unwrap().clone();
         let client = self.client.clone();
+        let manager = self.sub_lsp_manager.clone();
+        let config = self.config.read().unwrap().clone();
+        let capabilities = self
+            .client_capabilities
+            .read()
+            .unwrap()
+            .clone()
+            .unwrap_or_default();
+
         tokio::spawn(async move {
             if let (Some(root), Ok(noweb_file)) = (workspace_root, uri.to_file_path()) {
                 let symbols = parse_chunk_symbols(&text);
-                if let Err(e) = parser::create_virtual_docs(&symbols, &root, &noweb_file).await {
-                    client.log_message(MessageType::ERROR, format!("Failed to create virtual docs: {}", e)).await;
-                } else {
-                    client.log_message(MessageType::INFO, "Virtual docs created successfully!").await;
+                match parser::create_virtual_docs(&symbols, &root, &noweb_file).await {
+                    Err(e) => {
+                        client
+                            .log_message(
+                                MessageType::ERROR,
+                                format!("Failed to create virtual docs: {}", e),
+                            )
+                            .await;
+                    }
+                    Ok(mappings) => {
+                        client
+                            .log_message(MessageType::INFO, "Virtual docs created successfully!")
+                            .await;
+                        manager
+                            .sync_virtual_docs(
+                                &symbols,
+                                &root,
+                                client,
+                                &config,
+                                capabilities,
+                                mappings,
+                            )
+                            .await;
+                    }
                 }
             }
         });
@@ -141,8 +179,52 @@ impl LanguageServer for Backend {
 
         if let Some(change) = params.content_changes.first() {
             let new_text = change.text.clone();
+            self.document_map.insert(uri.clone(), new_text.clone());
 
-            self.document_map.insert(uri, new_text);
+            let workspace_root = self.workspace_root.lock().unwrap().clone();
+            let client = self.client.clone();
+            let manager = self.sub_lsp_manager.clone();
+            let config = self.config.read().unwrap().clone();
+            let capabilities = self
+                .client_capabilities
+                .read()
+                .unwrap()
+                .clone()
+                .unwrap_or_default();
+
+            tokio::spawn(async move {
+                if let (Some(root), Ok(noweb_file)) = (workspace_root, uri.to_file_path()) {
+                    let symbols = parse_chunk_symbols(&new_text);
+                    match parser::create_virtual_docs(&symbols, &root, &noweb_file).await {
+                        Err(e) => {
+                            client
+                                .log_message(
+                                    MessageType::ERROR,
+                                    format!("Failed to create virtual docs: {}", e),
+                                )
+                                .await;
+                        }
+                        Ok(mappings) => {
+                            client
+                                .log_message(
+                                    MessageType::INFO,
+                                    "Virtual docs updated successfully!",
+                                )
+                                .await;
+                            manager
+                                .sync_virtual_docs(
+                                    &symbols,
+                                    &root,
+                                    client,
+                                    &config,
+                                    capabilities,
+                                    mappings,
+                                )
+                                .await;
+                        }
+                    }
+                }
+            });
         }
     }
 
@@ -156,13 +238,42 @@ impl LanguageServer for Backend {
 
         let workspace_root = self.workspace_root.lock().unwrap().clone();
         let client = self.client.clone();
+        let manager = self.sub_lsp_manager.clone();
+        let config = self.config.read().unwrap().clone();
+        let capabilities = self
+            .client_capabilities
+            .read()
+            .unwrap()
+            .clone()
+            .unwrap_or_default();
+
         tokio::spawn(async move {
             if let (Some(root), Ok(noweb_file)) = (workspace_root, uri.to_file_path()) {
                 let symbols = parse_chunk_symbols(&text);
-                if let Err(e) = parser::create_virtual_docs(&symbols, &root, &noweb_file).await {
-                    client.log_message(MessageType::ERROR, format!("Failed to create virtual docs: {}", e)).await;
-                } else {
-                    client.log_message(MessageType::INFO, "Virtual docs updated successfully!").await;
+                match parser::create_virtual_docs(&symbols, &root, &noweb_file).await {
+                    Err(e) => {
+                        client
+                            .log_message(
+                                MessageType::ERROR,
+                                format!("Failed to create virtual docs: {}", e),
+                            )
+                            .await;
+                    }
+                    Ok(mappings) => {
+                        client
+                            .log_message(MessageType::INFO, "Virtual docs updated successfully!")
+                            .await;
+                        manager
+                            .sync_virtual_docs(
+                                &symbols,
+                                &root,
+                                client,
+                                &config,
+                                capabilities,
+                                mappings,
+                            )
+                            .await;
+                    }
                 }
             }
         });
@@ -269,6 +380,8 @@ async fn main() {
         document_map: DashMap::new(),
         workspace_root: std::sync::Mutex::new(None),
         config: std::sync::RwLock::new(config::NolspConfig::default()),
+        sub_lsp_manager: Arc::new(sub_lsp::SubLspManager::new()),
+        client_capabilities: std::sync::RwLock::new(None),
     });
     Server::new(stdin, stdout, socket).serve(service).await;
 }
