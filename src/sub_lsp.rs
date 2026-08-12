@@ -7,7 +7,9 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tower_lsp::Client;
-use tower_lsp::lsp_types::{ClientCapabilities, Diagnostic, MessageType, Url};
+use tower_lsp::lsp_types::{
+    ClientCapabilities, Diagnostic, MessageType, SemanticTokensLegend, Url,
+};
 
 pub type DiagnosticsCache = Arc<DashMap<Url, DashMap<Url, Vec<Diagnostic>>>>;
 
@@ -22,6 +24,7 @@ pub struct SubLspClient {
     pub line_mappings: DashMap<Url, Vec<(usize, isize)>>,
     pub virtual_to_original_uri: DashMap<Url, Url>,
     pub diagnostics_cache: DiagnosticsCache,
+    pub legend: std::sync::RwLock<Option<SemanticTokensLegend>>,
 }
 
 pub struct SubLspManager {
@@ -140,6 +143,7 @@ impl SubLspClient {
             line_mappings,
             virtual_to_original_uri,
             diagnostics_cache,
+            legend: std::sync::RwLock::new(None),
         });
 
         // Spawn writer loop
@@ -185,15 +189,67 @@ impl SubLspClient {
                                 }
                             } else {
                                 // Request from the sub-LSP (e.g. workspace/configuration)
-                                let response = serde_json::json!({
-                                    "jsonrpc": "2.0",
-                                    "id": id,
-                                    "error": {
-                                        "code": -32601,
-                                        "message": "Method not found"
-                                    }
-                                });
-                                let _ = sub_client_read.stdin_tx.send(response).await;
+                                let method =
+                                    msg.get("method").and_then(|m| m.as_str()).unwrap_or("");
+                                if method == "workspace/semanticTokens/refresh" {
+                                    let sub_client_resp = sub_client_read.clone();
+                                    let client_resp = client_read.clone();
+                                    let id_val = id.clone();
+                                    tokio::spawn(async move {
+                                        let res = client_resp
+                                            .send_request::<tower_lsp::lsp_types::request::SemanticTokensRefresh>(())
+                                            .await;
+                                        let response = match res {
+                                            Ok(_) => serde_json::json!({
+                                                "jsonrpc": "2.0",
+                                                "id": id_val,
+                                                "result": null,
+                                            }),
+                                            Err(err) => serde_json::json!({
+                                                "jsonrpc": "2.0",
+                                                "id": id_val,
+                                                "error": {
+                                                    "code": -32603,
+                                                    "message": format!("Internal error: {}", err),
+                                                }
+                                            }),
+                                        };
+                                        let _ = sub_client_resp.stdin_tx.send(response).await;
+                                    });
+                                } else if method == "workspace/configuration" {
+                                    // Return a list of nulls matching the number of requested items
+                                    let num_items = msg
+                                        .get("params")
+                                        .and_then(|p| p.get("items"))
+                                        .and_then(|i| i.as_array())
+                                        .map(|a| a.len())
+                                        .unwrap_or(1);
+                                    let result = serde_json::Value::Array(vec![
+                                        serde_json::Value::Null;
+                                        num_items
+                                    ]);
+                                    let response = serde_json::json!({
+                                        "jsonrpc": "2.0",
+                                        "id": id,
+                                        "result": result,
+                                    });
+                                    let _ = sub_client_read.stdin_tx.send(response).await;
+                                } else if method == "workspace/diagnostic/refresh" {
+                                    let response = serde_json::json!({
+                                        "jsonrpc": "2.0",
+                                        "id": id,
+                                        "result": null,
+                                    });
+                                    let _ = sub_client_read.stdin_tx.send(response).await;
+                                } else {
+                                    // Fallback to null result for other unsupported requests to prevent crashes
+                                    let response = serde_json::json!({
+                                        "jsonrpc": "2.0",
+                                        "id": id,
+                                        "result": null,
+                                    });
+                                    let _ = sub_client_read.stdin_tx.send(response).await;
+                                }
                             }
                         } else if let Some(method) = msg.get("method").and_then(|m| m.as_str()) {
                             log_debug(&format!("Received notification: {}", method));
@@ -318,6 +374,21 @@ impl SubLspClient {
         let response = self.send_request("initialize", params).await?;
         if let Some(err) = response.get("error") {
             return Err(format!("Server returned initialization error: {:?}", err));
+        }
+
+        if let Some(result) = response.get("result") {
+            if let Some(caps) = result.get("capabilities") {
+                if let Some(sem_tokens) = caps.get("semanticTokensProvider") {
+                    if let Some(legend_val) = sem_tokens.get("legend") {
+                        if let Ok(legend) =
+                            serde_json::from_value::<SemanticTokensLegend>(legend_val.clone())
+                        {
+                            let mut self_legend = self.legend.write().unwrap();
+                            *self_legend = Some(legend);
+                        }
+                    }
+                }
+            }
         }
 
         self.send_notification("initialized", serde_json::json!({}))
@@ -475,7 +546,16 @@ impl SubLspManager {
                             format!("Successfully initialized sub-LSP for {}", ext),
                         )
                         .await;
-                    self.active_clients.insert(ext, c.clone());
+                    self.active_clients.insert(ext.clone(), c.clone());
+
+                    // Request the editor client to refresh semantic tokens
+                    let client_cb = client.clone();
+                    tokio::spawn(async move {
+                        let _ = client_cb
+                            .send_request::<tower_lsp::lsp_types::request::SemanticTokensRefresh>(())
+                            .await;
+                    });
+
                     Some(c)
                 }
             }

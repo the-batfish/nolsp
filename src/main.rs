@@ -13,8 +13,43 @@ use tower_lsp::{Client, LanguageServer, LspService, Server};
 
 fn get_semantic_tokens_legend() -> SemanticTokensLegend {
     SemanticTokensLegend {
-        token_types: vec![SemanticTokenType::MACRO, SemanticTokenType::KEYWORD],
-        token_modifiers: vec![], // We won't use modifiers for now
+        token_types: vec![
+            SemanticTokenType::NAMESPACE,
+            SemanticTokenType::TYPE,
+            SemanticTokenType::CLASS,
+            SemanticTokenType::ENUM,
+            SemanticTokenType::INTERFACE,
+            SemanticTokenType::STRUCT,
+            SemanticTokenType::TYPE_PARAMETER,
+            SemanticTokenType::PARAMETER,
+            SemanticTokenType::VARIABLE,
+            SemanticTokenType::PROPERTY,
+            SemanticTokenType::ENUM_MEMBER,
+            SemanticTokenType::EVENT,
+            SemanticTokenType::FUNCTION,
+            SemanticTokenType::METHOD,
+            SemanticTokenType::MACRO,
+            SemanticTokenType::KEYWORD,
+            SemanticTokenType::MODIFIER,
+            SemanticTokenType::COMMENT,
+            SemanticTokenType::STRING,
+            SemanticTokenType::NUMBER,
+            SemanticTokenType::REGEXP,
+            SemanticTokenType::OPERATOR,
+            SemanticTokenType::DECORATOR,
+        ],
+        token_modifiers: vec![
+            SemanticTokenModifier::DECLARATION,
+            SemanticTokenModifier::DEFINITION,
+            SemanticTokenModifier::READONLY,
+            SemanticTokenModifier::STATIC,
+            SemanticTokenModifier::DEPRECATED,
+            SemanticTokenModifier::ABSTRACT,
+            SemanticTokenModifier::ASYNC,
+            SemanticTokenModifier::MODIFICATION,
+            SemanticTokenModifier::DOCUMENTATION,
+            SemanticTokenModifier::DEFAULT_LIBRARY,
+        ],
     }
 }
 
@@ -454,50 +489,214 @@ impl LanguageServer for Backend {
         params: SemanticTokensParams,
     ) -> Result<Option<SemanticTokensResult>> {
         let uri = params.text_document.uri;
+        crate::sub_lsp::log_debug(&format!("semantic_tokens_full called for uri: {}", uri));
 
         let text = match self.document_map.get(&uri) {
             Some(doc) => doc.clone(),
-            None => return Ok(None),
+            None => {
+                crate::sub_lsp::log_debug("Document not found in document_map");
+                return Ok(None);
+            }
         };
 
         let symbols: Vec<ChunkSymbols> = parse_chunk_symbols(&text);
+        crate::sub_lsp::log_debug(&format!("Found {} noweb symbols", symbols.len()));
 
-        let mut tokens = Vec::new();
-        let mut previous_line = 0;
-        let mut previous_col = 0;
+        struct AbsoluteToken {
+            line: usize,
+            col: usize,
+            length: usize,
+            token_type: u32,
+            token_modifiers: u32,
+        }
 
-        for symbol in symbols {
-            let delta_line = (symbol.line_num - previous_line) as u32;
-            let delta_start = if delta_line == 0 {
-                (symbol.start_col - previous_col) as u32
+        let mut absolute_tokens = Vec::new();
+
+        // 1. Gather noweb symbols
+        for symbol in &symbols {
+            let token_type = if symbol.kind == ChunkSymbolKind::Header {
+                14 // MACRO
             } else {
-                symbol.start_col as u32
+                15 // KEYWORD
+            };
+            absolute_tokens.push(AbsoluteToken {
+                line: symbol.line_num,
+                col: symbol.start_col,
+                length: symbol.full_length,
+                token_type,
+                token_modifiers: 0,
+            });
+        }
+
+        // 2. Query and merge semantic tokens from relevant sub-LSPs
+        let legend = get_semantic_tokens_legend();
+
+        for entry in self.sub_lsp_manager.active_clients.iter() {
+            let sub_client = entry.value();
+            for doc_entry in sub_client.line_mappings.iter() {
+                let virtual_uri = doc_entry.key();
+
+                // Only query if this virtual file belongs to the current noweb file
+                let belongs = sub_client
+                    .virtual_to_original_uri
+                    .get(virtual_uri)
+                    .map(|orig| orig.value() == &uri)
+                    .unwrap_or(false);
+
+                if !belongs {
+                    continue;
+                }
+
+                let has_legend = sub_client.legend.read().unwrap().is_some();
+                if !has_legend {
+                    continue;
+                }
+
+                // Send request to sub-LSP
+                let sub_params = SemanticTokensParams {
+                    partial_result_params: PartialResultParams::default(),
+                    work_done_progress_params: WorkDoneProgressParams::default(),
+                    text_document: TextDocumentIdentifier {
+                        uri: virtual_uri.clone(),
+                    },
+                };
+
+                let request_val = match serde_json::to_value(sub_params) {
+                    Ok(val) => val,
+                    Err(_) => continue,
+                };
+
+                let response_res = tokio::time::timeout(
+                    std::time::Duration::from_millis(2000),
+                    sub_client.send_request("textDocument/semanticTokens/full", request_val),
+                )
+                .await;
+
+                if let Ok(Ok(response)) = response_res {
+                    let sub_legend = sub_client.legend.read().unwrap();
+                    let sub_legend_opt = sub_legend.as_ref();
+                    if let Some(result) = response.get("result") {
+                        if let Some(data_val) = result.get("data").and_then(|d| d.as_array()) {
+                            // Decode delta-encoded tokens
+                            let mut current_line = 0;
+                            let mut current_col = 0;
+
+                            for chunk in data_val.chunks_exact(5) {
+                                let delta_line = chunk[0].as_u64().unwrap_or(0) as usize;
+                                let delta_start = chunk[1].as_u64().unwrap_or(0) as usize;
+                                let length = chunk[2].as_u64().unwrap_or(0) as usize;
+                                let token_type = chunk[3].as_u64().unwrap_or(0) as usize;
+                                let token_modifiers = chunk[4].as_u64().unwrap_or(0) as u32;
+
+                                current_line += delta_line;
+                                if delta_line > 0 {
+                                    current_col = delta_start;
+                                } else {
+                                    current_col += delta_start;
+                                }
+
+                                // Map coordinates back to the original noweb document
+                                if let Some((orig_line, orig_col)) = sub_client.map_to_original(
+                                    virtual_uri,
+                                    current_line,
+                                    current_col,
+                                ) {
+                                    // Map token type to the unified legend
+                                    let mut mapped_type = 8; // fallback to VARIABLE (index 8)
+                                    if let Some(sub_leg) = sub_legend_opt {
+                                        if let Some(sub_type_name) =
+                                            sub_leg.token_types.get(token_type)
+                                        {
+                                            if let Some(pos) = legend
+                                                .token_types
+                                                .iter()
+                                                .position(|t| t == sub_type_name)
+                                            {
+                                                mapped_type = pos as u32;
+                                            }
+                                        }
+                                    }
+
+                                    // Map token modifiers
+                                    let mut mapped_modifiers = 0;
+                                    if let Some(sub_leg) = sub_legend_opt {
+                                        for i in 0..32 {
+                                            if (token_modifiers & (1 << i)) != 0 {
+                                                if let Some(mod_name) =
+                                                    sub_leg.token_modifiers.get(i)
+                                                {
+                                                    if let Some(pos) = legend
+                                                        .token_modifiers
+                                                        .iter()
+                                                        .position(|m| m == mod_name)
+                                                    {
+                                                        mapped_modifiers |= 1 << pos;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    absolute_tokens.push(AbsoluteToken {
+                                        line: orig_line,
+                                        col: orig_col,
+                                        length,
+                                        token_type: mapped_type,
+                                        token_modifiers: mapped_modifiers,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Sort tokens by line, then by column
+        absolute_tokens.sort_by(|a, b| {
+            if a.line != b.line {
+                a.line.cmp(&b.line)
+            } else {
+                a.col.cmp(&b.col)
+            }
+        });
+
+        // 4. Remove duplicate tokens at the same location
+        absolute_tokens.dedup_by(|a, b| a.line == b.line && a.col == b.col);
+
+        // 5. Delta-encode the tokens
+        let mut delta_tokens = Vec::new();
+        let mut prev_line = 0;
+        let mut prev_col = 0;
+
+        for token in absolute_tokens {
+            let delta_line = (token.line - prev_line) as u32;
+            let delta_start = if delta_line == 0 {
+                (token.col - prev_col) as u32
+            } else {
+                token.col as u32
             };
 
-            if symbol.kind == ChunkSymbolKind::Header {
-                tokens.push(SemanticToken {
-                    delta_line,
-                    delta_start,
-                    length: symbol.full_length as u32,
-                    token_type: 0,
-                    token_modifiers_bitset: 0,
-                });
-            } else {
-                tokens.push(SemanticToken {
-                    delta_line,
-                    delta_start,
-                    length: symbol.full_length as u32,
-                    token_type: 1,
-                    token_modifiers_bitset: 0,
-                });
-            }
+            delta_tokens.push(SemanticToken {
+                delta_line,
+                delta_start,
+                length: token.length as u32,
+                token_type: token.token_type,
+                token_modifiers_bitset: token.token_modifiers,
+            });
 
-            previous_line = symbol.line_num;
-            previous_col = symbol.start_col;
+            prev_line = token.line;
+            prev_col = token.col;
         }
+
+        crate::sub_lsp::log_debug(&format!(
+            "semantic_tokens_full returning {} tokens",
+            delta_tokens.len()
+        ));
+
         Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
             result_id: None,
-            data: tokens,
+            data: delta_tokens,
         })))
     }
 
@@ -734,6 +933,7 @@ mod main_tests {
             line_mappings,
             virtual_to_original_uri,
             diagnostics_cache,
+            legend: std::sync::RwLock::new(None),
         };
 
         translate_completion_item(&mut item, &sub_client, &doc_uri);
