@@ -264,6 +264,8 @@ impl LanguageServer for Backend {
                                 &config,
                                 capabilities,
                                 mappings,
+                                uri.clone(),
+                                false,
                             )
                             .await;
                     }
@@ -317,6 +319,8 @@ impl LanguageServer for Backend {
                                     &config,
                                     capabilities,
                                     mappings,
+                                    uri.clone(),
+                                    false,
                                 )
                                 .await;
                         }
@@ -369,6 +373,8 @@ impl LanguageServer for Backend {
                                 &config,
                                 capabilities,
                                 mappings,
+                                uri.clone(),
+                                true,
                             )
                             .await;
                     }
@@ -683,7 +689,6 @@ mod main_tests {
     use super::*;
     use dashmap::DashMap;
     use std::sync::Arc;
-    use tower_lsp::lsp_types::*;
 
     #[tokio::test]
     async fn test_translate_completion_item() {
@@ -715,6 +720,9 @@ mod main_tests {
         // Line 0 maps to line 10 in original noweb file, with offset 4
         line_mappings.insert(doc_uri.clone(), vec![(10, 4)]);
 
+        let virtual_to_original_uri = DashMap::new();
+        let diagnostics_cache = Arc::new(DashMap::new());
+
         let sub_client = sub_lsp::SubLspClient {
             ext: "rs".to_string(),
             language_id: "rust".to_string(),
@@ -724,6 +732,8 @@ mod main_tests {
             next_id: std::sync::atomic::AtomicU64::new(1),
             opened_documents: DashMap::new(),
             line_mappings,
+            virtual_to_original_uri,
+            diagnostics_cache,
         };
 
         translate_completion_item(&mut item, &sub_client, &doc_uri);

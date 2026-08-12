@@ -7,7 +7,9 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tower_lsp::Client;
-use tower_lsp::lsp_types::{ClientCapabilities, MessageType, Url};
+use tower_lsp::lsp_types::{ClientCapabilities, Diagnostic, MessageType, Url};
+
+pub type DiagnosticsCache = Arc<DashMap<Url, DashMap<Url, Vec<Diagnostic>>>>;
 
 pub struct SubLspClient {
     pub ext: String,
@@ -18,11 +20,22 @@ pub struct SubLspClient {
     pub next_id: std::sync::atomic::AtomicU64,
     pub opened_documents: DashMap<Url, i32>,
     pub line_mappings: DashMap<Url, Vec<(usize, isize)>>,
+    pub virtual_to_original_uri: DashMap<Url, Url>,
+    pub diagnostics_cache: DiagnosticsCache,
 }
 
-#[derive(Default)]
 pub struct SubLspManager {
     pub active_clients: DashMap<String, Arc<SubLspClient>>,
+    pub diagnostics_cache: DiagnosticsCache,
+}
+
+impl Default for SubLspManager {
+    fn default() -> Self {
+        Self {
+            active_clients: DashMap::new(),
+            diagnostics_cache: Arc::new(DashMap::new()),
+        }
+    }
 }
 
 async fn read_message<R>(reader: &mut BufReader<R>) -> std::io::Result<Option<serde_json::Value>>
@@ -91,8 +104,9 @@ impl SubLspClient {
         args: &[String],
         env: &HashMap<String, String>,
         client: Client,
-        root_uri: Url,
-        capabilities: ClientCapabilities,
+        _root_uri: Url,
+        _capabilities: ClientCapabilities,
+        diagnostics_cache: DiagnosticsCache,
     ) -> Result<Arc<Self>, std::io::Error> {
         let mut child = Command::new(command)
             .args(args)
@@ -113,6 +127,7 @@ impl SubLspClient {
         let process = Arc::new(Mutex::new(child));
         let next_id = std::sync::atomic::AtomicU64::new(1);
         let line_mappings = DashMap::new();
+        let virtual_to_original_uri = DashMap::new();
 
         let sub_client = Arc::new(Self {
             ext: ext.clone(),
@@ -123,6 +138,8 @@ impl SubLspClient {
             next_id,
             opened_documents,
             line_mappings,
+            virtual_to_original_uri,
+            diagnostics_cache,
         });
 
         // Spawn writer loop
@@ -141,6 +158,7 @@ impl SubLspClient {
         tokio::spawn(async move {
             let mut reader = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = reader.next_line().await {
+                log_debug(&format!("[sub-lsp-{}-stderr] {}", sub_client_err.ext, line));
                 client_err
                     .log_message(
                         MessageType::LOG,
@@ -158,6 +176,7 @@ impl SubLspClient {
             loop {
                 match read_message(&mut reader).await {
                     Ok(Some(msg)) => {
+                        log_debug(&format!("Raw JSON from sub-LSP: {}", msg));
                         if let Some(id) = msg.get("id") {
                             if msg.get("method").is_none() {
                                 // Response
@@ -177,16 +196,33 @@ impl SubLspClient {
                                 let _ = sub_client_read.stdin_tx.send(response).await;
                             }
                         } else if let Some(method) = msg.get("method").and_then(|m| m.as_str()) {
+                            log_debug(&format!("Received notification: {}", method));
                             // Notification from sub-LSP
-                            client_read
-                                .log_message(
-                                    MessageType::LOG,
-                                    format!(
-                                        "[sub-lsp-{}] Notification: {}",
-                                        sub_client_read.ext, method
-                                    ),
-                                )
-                                .await;
+                            if method == "textDocument/publishDiagnostics" {
+                                if let Some(params) = msg.get("params") {
+                                    if let Err(e) =
+                                        handle_diagnostics(&client_read, &sub_client_read, params)
+                                            .await
+                                    {
+                                        let _ = client_read
+                                            .log_message(
+                                                MessageType::ERROR,
+                                                format!("Error mapping diagnostics: {}", e),
+                                            )
+                                            .await;
+                                    }
+                                }
+                            } else {
+                                client_read
+                                    .log_message(
+                                        MessageType::LOG,
+                                        format!(
+                                            "[sub-lsp-{}] Notification: {}",
+                                            sub_client_read.ext, method
+                                        ),
+                                    )
+                                    .await;
+                            }
                         }
                     }
                     Ok(None) => break,
@@ -203,32 +239,6 @@ impl SubLspClient {
                         break;
                     }
                 }
-            }
-        });
-
-        // Perform initialization handshake asynchronously
-        let sub_client_init = sub_client.clone();
-        tokio::spawn(async move {
-            if let Err(e) = sub_client_init.initialize(root_uri, capabilities).await {
-                client
-                    .log_message(
-                        MessageType::ERROR,
-                        format!(
-                            "Failed to initialize sub-LSP for {}: {}",
-                            sub_client_init.ext, e
-                        ),
-                    )
-                    .await;
-            } else {
-                client
-                    .log_message(
-                        MessageType::INFO,
-                        format!(
-                            "Successfully initialized sub-LSP for {}",
-                            sub_client_init.ext
-                        ),
-                    )
-                    .await;
             }
         });
 
@@ -279,9 +289,28 @@ impl SubLspClient {
         root_uri: Url,
         capabilities: ClientCapabilities,
     ) -> Result<(), String> {
+        let root_path = root_uri
+            .to_file_path()
+            .ok()
+            .and_then(|p| p.to_str().map(|s| s.to_string()));
+        let root_name = root_uri
+            .path()
+            .split('/')
+            .filter(|s| !s.is_empty())
+            .last()
+            .unwrap_or("root")
+            .to_string();
+
         let params = serde_json::json!({
             "processId": std::process::id(),
+            "rootPath": root_path,
             "rootUri": root_uri,
+            "workspaceFolders": [
+                {
+                    "uri": root_uri,
+                    "name": root_name,
+                }
+            ],
             "capabilities": capabilities,
             "initializationOptions": serde_json::Value::Null,
         });
@@ -301,8 +330,11 @@ impl SubLspClient {
         doc_uri: Url,
         doc_path: &Path,
         mapping: Vec<(usize, isize)>,
+        original_uri: Url,
     ) -> Result<(), String> {
         self.line_mappings.insert(doc_uri.clone(), mapping);
+        self.virtual_to_original_uri
+            .insert(doc_uri.clone(), original_uri);
         let content = tokio::fs::read_to_string(doc_path)
             .await
             .map_err(|e| format!("Failed to read virtual doc from disk: {}", e))?;
@@ -348,6 +380,15 @@ impl SubLspClient {
         Ok(())
     }
 
+    pub async fn save_document(&self, doc_uri: Url) -> Result<(), String> {
+        let params = serde_json::json!({
+            "textDocument": {
+                "uri": doc_uri
+            }
+        });
+        self.send_notification("textDocument/didSave", params).await
+    }
+
     pub fn map_to_virtual(
         &self,
         doc_uri: &Url,
@@ -378,6 +419,7 @@ impl SubLspManager {
     pub fn new() -> Self {
         Self {
             active_clients: DashMap::new(),
+            diagnostics_cache: Arc::new(DashMap::new()),
         }
     }
 
@@ -413,12 +455,29 @@ impl SubLspManager {
             &server_config.args,
             &server_config.env,
             client.clone(),
-            root_uri,
-            capabilities,
+            root_uri.clone(),
+            capabilities.clone(),
+            self.diagnostics_cache.clone(),
         ) {
             Ok(c) => {
-                self.active_clients.insert(ext, c.clone());
-                Some(c)
+                if let Err(e) = c.initialize(root_uri, capabilities).await {
+                    let _ = client
+                        .log_message(
+                            MessageType::ERROR,
+                            format!("Failed to initialize sub-LSP for {}: {}", ext, e),
+                        )
+                        .await;
+                    None
+                } else {
+                    let _ = client
+                        .log_message(
+                            MessageType::INFO,
+                            format!("Successfully initialized sub-LSP for {}", ext),
+                        )
+                        .await;
+                    self.active_clients.insert(ext, c.clone());
+                    Some(c)
+                }
             }
             Err(e) => {
                 let _ = client
@@ -443,7 +502,13 @@ impl SubLspManager {
         config: &crate::config::NolspConfig,
         capabilities: ClientCapabilities,
         mappings: HashMap<PathBuf, Vec<(usize, isize)>>,
+        original_uri: Url,
+        is_save: bool,
     ) {
+        log_debug(&format!(
+            "sync_virtual_docs called for original_uri: {}, is_save: {}",
+            original_uri, is_save
+        ));
         use std::collections::HashSet;
 
         let mut unique_names = HashSet::<String>::new();
@@ -477,19 +542,21 @@ impl SubLspManager {
 
             let sub_client = self
                 .get_or_spawn(
-                    ext,
+                    ext.clone(),
                     config,
                     client.clone(),
-                    Some(workspace_root.to_path_buf()),
+                    Some(workspace_root.join(".nolsp").join("virtual")),
                     capabilities.clone(),
                 )
                 .await;
 
             if let Some(sub_client) = sub_client {
+                log_debug(&format!("Found sub_client for ext: {}", ext));
                 let mapping = mappings.get(&target_path).cloned().unwrap_or_default();
                 if let Ok(doc_uri) = Url::from_file_path(&target_path) {
+                    log_debug(&format!("Syncing document: {}", doc_uri));
                     if let Err(e) = sub_client
-                        .sync_document(doc_uri, &target_path, mapping)
+                        .sync_document(doc_uri.clone(), &target_path, mapping, original_uri.clone())
                         .await
                     {
                         let _ = client
@@ -498,6 +565,18 @@ impl SubLspManager {
                                 format!("Failed to sync virtual doc {}: {}", file_name, e),
                             )
                             .await;
+                    }
+
+                    if is_save {
+                        log_debug(&format!("Saving document: {}", doc_uri));
+                        if let Err(e) = sub_client.save_document(doc_uri).await {
+                            let _ = client
+                                .log_message(
+                                    MessageType::ERROR,
+                                    format!("Failed to save virtual doc {}: {}", file_name, e),
+                                )
+                                .await;
+                        }
                     }
                 }
             }
@@ -531,6 +610,107 @@ impl SubLspManager {
         }
         self.active_clients.clear();
     }
+}
+
+pub fn log_debug(msg: &str) {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    if let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/home/alwin/Documents/2026_sem1/REIT4841/testing/.nolsp/debug.log")
+    {
+        let _ = writeln!(file, "{}", msg);
+    }
+}
+
+async fn handle_diagnostics(
+    client: &tower_lsp::Client,
+    sub_client: &SubLspClient,
+    params: &Value,
+) -> Result<(), String> {
+    let virtual_uri_str = params
+        .get("uri")
+        .and_then(|u| u.as_str())
+        .ok_or("Missing uri in diagnostics params")?;
+    let virtual_uri =
+        Url::parse(virtual_uri_str).map_err(|e| format!("Invalid uri in diagnostics: {}", e))?;
+
+    log_debug(&format!(
+        "handle_diagnostics for virtual_uri: {}",
+        virtual_uri
+    ));
+
+    let original_uri = sub_client
+        .virtual_to_original_uri
+        .get(&virtual_uri)
+        .map(|entry| entry.value().clone())
+        .ok_or_else(|| format!("No original URI found for virtual URI: {}", virtual_uri))?;
+
+    log_debug(&format!(
+        "mapped virtual_uri to original_uri: {}",
+        original_uri
+    ));
+
+    let diagnostics_val = params
+        .get("diagnostics")
+        .and_then(|d| d.as_array())
+        .ok_or("Missing diagnostics array")?;
+
+    log_debug(&format!(
+        "Raw diagnostics count from sub-LSP: {}",
+        diagnostics_val.len()
+    ));
+
+    let mut original_diagnostics = Vec::new();
+
+    for diag_val in diagnostics_val {
+        let mut diag: tower_lsp::lsp_types::Diagnostic =
+            serde_json::from_value(diag_val.clone())
+                .map_err(|e| format!("Failed to parse diagnostic: {}", e))?;
+
+        if let Some((orig_start_line, orig_start_col)) = sub_client.map_to_original(
+            &virtual_uri,
+            diag.range.start.line as usize,
+            diag.range.start.character as usize,
+        ) {
+            diag.range.start.line = orig_start_line as u32;
+            diag.range.start.character = orig_start_col as u32;
+
+            if let Some((orig_end_line, orig_end_col)) = sub_client.map_to_original(
+                &virtual_uri,
+                diag.range.end.line as usize,
+                diag.range.end.character as usize,
+            ) {
+                diag.range.end.line = orig_end_line as u32;
+                diag.range.end.character = orig_end_col as u32;
+
+                original_diagnostics.push(diag);
+            }
+        }
+    }
+
+    // Update diagnostics cache
+    let inner_map = sub_client
+        .diagnostics_cache
+        .entry(original_uri.clone())
+        .or_insert_with(DashMap::new);
+    inner_map.insert(virtual_uri, original_diagnostics);
+
+    // Merge and publish
+    let mut merged = Vec::new();
+    for entry in inner_map.iter() {
+        merged.extend(entry.value().clone());
+    }
+
+    log_debug(&format!(
+        "Publishing {} merged diagnostics to {}",
+        merged.len(),
+        original_uri
+    ));
+
+    client.publish_diagnostics(original_uri, merged, None).await;
+    Ok(())
 }
 
 #[cfg(test)]
