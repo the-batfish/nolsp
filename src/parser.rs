@@ -62,8 +62,8 @@ pub fn parse_chunk_symbols(content: &str) -> Vec<ChunkSymbols> {
 pub async fn create_virtual_docs(
     symbols: &Vec<ChunkSymbols>,
     workspace_root: &Path,
-    noweb_file: &Path,
-) -> Result<HashMap<PathBuf, Vec<usize>>, std::io::Error> {
+    noweb_content: &str,
+) -> Result<HashMap<PathBuf, Vec<(usize, isize)>>, std::io::Error> {
     // Gather up all the chunk names and keep only the unique ones
     let mut unique_names = HashSet::<String>::new();
 
@@ -78,6 +78,14 @@ pub async fn create_virtual_docs(
         .into_iter()
         .filter(|s| Path::new(s).extension().is_some())
         .collect();
+
+    // Write noweb in-memory content to a temporary file in .nolsp/tmp/temp.nw
+    let temp_dir = workspace_root.join(".nolsp").join("tmp");
+    fs::create_dir_all(&temp_dir).await?;
+    let temp_nw_file = temp_dir.join("temp.nw");
+    fs::write(&temp_nw_file, noweb_content).await?;
+
+    let noweb_lines: Vec<&str> = noweb_content.lines().collect();
 
     let mut mappings = HashMap::new();
 
@@ -96,7 +104,7 @@ pub async fn create_virtual_docs(
         let mut child = Command::new("notangle")
             .arg("-L")
             .arg(format!("-R{}", file_name))
-            .arg(noweb_file)
+            .arg(&temp_nw_file)
             .stdout(std::process::Stdio::piped())
             .spawn()?;
 
@@ -130,7 +138,20 @@ pub async fn create_virtual_docs(
                 } else {
                     0
                 };
-                line_mapping.push(original_line);
+
+                let mut col_offset = 0;
+                if let Some(orig_line_str) = noweb_lines.get(original_line) {
+                    if orig_line_str.trim() == line.trim() {
+                        let w_virt = line.chars().take_while(|c| c.is_whitespace()).count();
+                        let w_orig = orig_line_str
+                            .chars()
+                            .take_while(|c| c.is_whitespace())
+                            .count();
+                        col_offset = w_virt as isize - w_orig as isize;
+                    }
+                }
+
+                line_mapping.push((original_line, col_offset));
 
                 current_original_line += 1;
             }
