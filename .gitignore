@@ -21,3 +21,12 @@ target
 #.idea/
 
 GEMINI.md
+
+# Virtual documents generated at runtime by nolsp
+.nolsp/
+
+# VS Code extension build outputs and dependencies
+**/node_modules/
+**/out/
+editors/vscode/bin/
+*.vsix
