@@ -55,6 +55,24 @@ pub fn parse_chunk_symbols(content: &str) -> Vec<ChunkSymbols> {
     symbols
 }
 
+fn get_notangle_cmd() -> PathBuf {
+    if let Ok(path) = std::env::var("NOTANGLE_PATH") {
+        return PathBuf::from(path);
+    }
+    for candidate in &[
+        "notangle",
+        "/usr/local/noweb/notangle",
+        "/usr/local/bin/notangle",
+        "/usr/bin/notangle",
+    ] {
+        let p = Path::new(candidate);
+        if p.is_absolute() && p.exists() {
+            return p.to_path_buf();
+        }
+    }
+    PathBuf::from("notangle")
+}
+
 /**
  * Handles creating the virtual directory where all the virtual documents reside for
  * use with language servers, extracting them using `notangle -L` to build line-mapping tables.
@@ -101,7 +119,8 @@ pub async fn create_virtual_docs(
             fs::create_dir_all(parent_dir).await?;
         }
 
-        let mut child = Command::new("notangle")
+        let notangle_bin = get_notangle_cmd();
+        let mut child = Command::new(notangle_bin)
             .arg("-L")
             .arg(format!("-R{}", file_name))
             .arg(&temp_nw_file)

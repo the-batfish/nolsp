@@ -41,9 +41,32 @@ export async function activate(context: ExtensionContext) {
     return;
   }
 
+  const home = process.env.HOME || "";
+  const additionalPaths = [
+    "/usr/local/noweb",
+    "/usr/local/bin",
+    "/usr/bin",
+    path.join(home, ".local", "bin"),
+    path.join(home, ".cargo", "bin"),
+    path.join(home, "bin"),
+  ].filter((p) => fs.existsSync(p));
+
+  const currentPath = process.env.PATH || "";
+  const extendedPath = Array.from(
+    new Set([...currentPath.split(path.delimiter), ...additionalPaths])
+  ).join(path.delimiter);
+
   const serverOptions: ServerOptions = {
-    run: { command: serverCommand, transport: TransportKind.stdio },
-    debug: { command: serverCommand, transport: TransportKind.stdio },
+    run: {
+      command: serverCommand,
+      transport: TransportKind.stdio,
+      options: { env: { ...process.env, PATH: extendedPath } },
+    },
+    debug: {
+      command: serverCommand,
+      transport: TransportKind.stdio,
+      options: { env: { ...process.env, PATH: extendedPath } },
+    },
   };
 
   const clientOptions: LanguageClientOptions = {
