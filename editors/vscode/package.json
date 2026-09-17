@@ -1,0 +1,73 @@
+{
+  "name": "nolsp",
+  "description": "Language Server Multiplexer for noweb",
+  "version": "0.4.0",
+  "publisher": "the-batfish",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:noweb"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "noweb",
+        "aliases": [
+          "Noweb",
+          "noweb"
+        ],
+        "extensions": [
+          ".nw",
+          ".noweb"
+        ]
+      }
+    ],
+    "grammars": [
+      {
+        "language": "noweb",
+        "scopeName": "text.noweb",
+        "path": "./syntaxes/noweb.tmLanguage.json",
+        "embeddedLanguages": {
+          "source.python": "python",
+          "source.c": "c",
+          "source.cpp": "cpp",
+          "source.rust": "rust",
+          "source.go": "go",
+          "source.ts": "typescript",
+          "source.js": "javascript",
+          "source.shell": "shellscript",
+          "text.tex.latex": "latex"
+        }
+      }
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "nolsp",
+      "properties": {
+        "nolsp.serverPath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional custom path to the nolsp executable."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.1",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^10.1.1"
+  }
+}

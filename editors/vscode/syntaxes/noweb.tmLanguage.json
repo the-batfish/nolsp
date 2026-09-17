@@ -1,0 +1,167 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "noweb",
+  "scopeName": "text.noweb",
+  "patterns": [
+    { "include": "#code-chunks" },
+    { "include": "#chunk-terminator" },
+    { "include": "text.tex.latex" }
+  ],
+  "repository": {
+    "code-chunks": {
+      "patterns": [
+        { "include": "#chunk-python" },
+        { "include": "#chunk-c" },
+        { "include": "#chunk-cpp" },
+        { "include": "#chunk-rust" },
+        { "include": "#chunk-go" },
+        { "include": "#chunk-typescript" },
+        { "include": "#chunk-javascript" },
+        { "include": "#chunk-shell" },
+        { "include": "#chunk-generic" }
+      ]
+    },
+    "chunk-header-captures": {
+      "patterns": []
+    },
+    "chunk-python": {
+      "begin": "^\\s*(<<)(.*\\.(?:py|pyw))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.python",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.python" }
+      ]
+    },
+    "chunk-c": {
+      "begin": "^\\s*(<<)(.*\\.(?:c|h))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.c",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.c" }
+      ]
+    },
+    "chunk-cpp": {
+      "begin": "^\\s*(<<)(.*\\.(?:cpp|cxx|cc|hpp|hxx|C|H))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.cpp",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.cpp" }
+      ]
+    },
+    "chunk-rust": {
+      "begin": "^\\s*(<<)(.*\\.rs)(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.rust",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.rust" }
+      ]
+    },
+    "chunk-go": {
+      "begin": "^\\s*(<<)(.*\\.go)(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.go",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.go" }
+      ]
+    },
+    "chunk-typescript": {
+      "begin": "^\\s*(<<)(.*\\.(?:ts|tsx))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.ts",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.ts" }
+      ]
+    },
+    "chunk-javascript": {
+      "begin": "^\\s*(<<)(.*\\.(?:js|jsx|mjs))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.js",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.js" }
+      ]
+    },
+    "chunk-shell": {
+      "begin": "^\\s*(<<)(.*\\.(?:sh|bash|zsh))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.shell",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.shell" }
+      ]
+    },
+    "chunk-generic": {
+      "begin": "^\\s*(<<)(.+?)(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "patterns": [
+        { "include": "#chunk-reference" }
+      ]
+    },
+    "chunk-terminator": {
+      "match": "^(@)(.*)$",
+      "captures": {
+        "1": { "name": "keyword.control.chunk.end.noweb" },
+        "2": { "name": "comment.line.noweb" }
+      }
+    },
+    "chunk-reference": {
+      "match": "(<<)(.*?)(>>)",
+      "captures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      }
+    }
+  }
+}
