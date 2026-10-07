@@ -120,7 +120,18 @@ pub async fn create_virtual_docs(
         }
 
         let notangle_bin = get_notangle_cmd();
-        let mut child = Command::new(notangle_bin)
+        let notangle_str = notangle_bin.to_string_lossy();
+        let mut cmd = if cfg!(windows)
+            && (notangle_str.ends_with(".cmd") || notangle_str.ends_with(".bat"))
+        {
+            let mut c = Command::new("cmd");
+            c.arg("/c").arg(&notangle_bin);
+            c
+        } else {
+            Command::new(&notangle_bin)
+        };
+
+        let mut child = cmd
             .arg("-L")
             .arg(format!("-R{}", file_name))
             .arg(&temp_nw_file)

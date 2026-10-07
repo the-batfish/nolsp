@@ -111,9 +111,17 @@ impl SubLspClient {
         _capabilities: ClientCapabilities,
         diagnostics_cache: DiagnosticsCache,
     ) -> Result<Arc<Self>, std::io::Error> {
-        let mut child = Command::new(command)
-            .args(args)
-            .envs(env)
+        let mut cmd = if cfg!(windows) && (command.ends_with(".cmd") || command.ends_with(".bat")) {
+            let mut c = Command::new("cmd");
+            c.arg("/c").arg(command).args(args).envs(env);
+            c
+        } else {
+            let mut c = Command::new(command);
+            c.args(args).envs(env);
+            c
+        };
+
+        let mut child = cmd
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
