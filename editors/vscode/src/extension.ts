@@ -1,5 +1,6 @@
 import * as path from "path";
 import * as fs from "fs";
+import * as vscode from "vscode";
 import { workspace, ExtensionContext, window } from "vscode";
 import {
   LanguageClient,
@@ -31,6 +32,65 @@ function findServerPath(context: ExtensionContext): string | null {
   }
 
   return binaryName;
+}
+
+function getDocLanguage(documentUri: vscode.Uri): string {
+  const candidates: string[] = [];
+
+  // 1. Workspace / Project-level candidates (highest priority)
+  const workspaceFolder = workspace.getWorkspaceFolder(documentUri);
+  if (workspaceFolder) {
+    candidates.push(path.join(workspaceFolder.uri.fsPath, "nolsp.toml"));
+    candidates.push(path.join(workspaceFolder.uri.fsPath, ".nolsp.toml"));
+  } else if (documentUri.fsPath) {
+    const dir = path.dirname(documentUri.fsPath);
+    candidates.push(path.join(dir, "nolsp.toml"));
+    candidates.push(path.join(dir, ".nolsp.toml"));
+  }
+
+  // 2. User / Global candidates (~/.config/nolsp/nolsp.toml, etc.)
+  const userHome = process.env.USERPROFILE || process.env.HOME || "";
+  if (userHome) {
+    candidates.push(path.join(userHome, ".config", "nolsp", "nolsp.toml"));
+    candidates.push(path.join(userHome, ".config", "nolsp", "config.toml"));
+    candidates.push(path.join(userHome, ".config", "nolsp", ".nolsp.toml"));
+  }
+  if (process.env.APPDATA) {
+    candidates.push(path.join(process.env.APPDATA, "nolsp", "nolsp.toml"));
+  }
+
+  for (const configPath of candidates) {
+    if (fs.existsSync(configPath)) {
+      try {
+        const content = fs.readFileSync(configPath, "utf-8");
+        for (const line of content.split(/\r?\n/)) {
+          const match = line.match(/^\s*doc_language\s*=\s*["']([^"']+)["']/);
+          if (match && match[1]) {
+            return match[1].trim();
+          }
+        }
+      } catch (e) {
+        console.error("Error reading nolsp config:", e);
+      }
+    }
+  }
+
+  return "latex"; // default fallback
+}
+
+async function syncDocumentLanguage(document: vscode.TextDocument) {
+  if (!document.fileName.endsWith(".nw") && !document.fileName.endsWith(".noweb")) {
+    return;
+  }
+
+  const targetLang = getDocLanguage(document.uri);
+  if (document.languageId !== targetLang) {
+    try {
+      await vscode.languages.setTextDocumentLanguage(document, targetLang);
+    } catch (e) {
+      console.error(`Failed to set document language to ${targetLang}:`, e);
+    }
+  }
 }
 
 export async function activate(context: ExtensionContext) {
@@ -125,9 +185,15 @@ export async function activate(context: ExtensionContext) {
   };
 
   const clientOptions: LanguageClientOptions = {
-    documentSelector: [{ scheme: "file", language: "noweb" }],
+    documentSelector: [
+      { scheme: "file", language: "noweb" },
+      { scheme: "file", pattern: "**/*.{nw,noweb}" },
+    ],
     synchronize: {
-      fileEvents: workspace.createFileSystemWatcher("**/.nolsp.toml"),
+      fileEvents: [
+        workspace.createFileSystemWatcher("**/nolsp.toml"),
+        workspace.createFileSystemWatcher("**/.nolsp.toml"),
+      ],
     },
   };
 
@@ -139,6 +205,22 @@ export async function activate(context: ExtensionContext) {
   );
 
   await client.start();
+
+  // Synchronize documentation language for currently active and newly opened noweb documents
+  context.subscriptions.push(
+    workspace.onDidOpenTextDocument((doc) => {
+      syncDocumentLanguage(doc);
+    }),
+    window.onDidChangeActiveTextEditor((editor) => {
+      if (editor) {
+        syncDocumentLanguage(editor.document);
+      }
+    })
+  );
+
+  if (window.activeTextEditor) {
+    syncDocumentLanguage(window.activeTextEditor.document);
+  }
 }
 
 export async function deactivate(): Promise<void> {
