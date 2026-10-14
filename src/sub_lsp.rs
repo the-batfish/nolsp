@@ -584,7 +584,7 @@ impl SubLspManager {
 
     pub async fn sync_virtual_docs(
         self: &Arc<Self>,
-        symbols: &[crate::parser::ChunkSymbols],
+        _symbols: &[crate::parser::ChunkSymbols],
         workspace_root: &Path,
         client: Client,
         config: &crate::config::NolspConfig,
@@ -597,33 +597,13 @@ impl SubLspManager {
             "sync_virtual_docs called for original_uri: {}, is_save: {}",
             original_uri, is_save
         ));
-        use std::collections::HashSet;
 
-        let mut unique_names = HashSet::<String>::new();
-        for symbol in symbols {
-            if let (crate::parser::ChunkSymbolKind::Header, Some(name)) =
-                (symbol.kind, &symbol.name)
-            {
-                unique_names.insert(name.clone());
-            }
-        }
-
-        let unique_file_names: Vec<String> = unique_names
-            .into_iter()
-            .filter(|s| Path::new(s).extension().is_some())
-            .collect();
-
-        for file_name in unique_file_names {
-            let target_path = workspace_root
-                .join(".nolsp")
-                .join("virtual")
-                .join(&file_name);
-
+        for (target_path, mapping) in &mappings {
             if !target_path.exists() {
                 continue;
             }
 
-            let ext = match Path::new(&file_name).extension().and_then(|e| e.to_str()) {
+            let ext = match target_path.extension().and_then(|e| e.to_str()) {
                 Some(e) => e.to_string(),
                 None => continue,
             };
@@ -640,17 +620,21 @@ impl SubLspManager {
 
             if let Some(sub_client) = sub_client {
                 log_debug(&format!("Found sub_client for ext: {}", ext));
-                let mapping = mappings.get(&target_path).cloned().unwrap_or_default();
-                if let Ok(doc_uri) = Url::from_file_path(&target_path) {
+                if let Ok(doc_uri) = Url::from_file_path(target_path) {
                     log_debug(&format!("Syncing document: {}", doc_uri));
                     if let Err(e) = sub_client
-                        .sync_document(doc_uri.clone(), &target_path, mapping, original_uri.clone())
+                        .sync_document(
+                            doc_uri.clone(),
+                            target_path,
+                            mapping.clone(),
+                            original_uri.clone(),
+                        )
                         .await
                     {
                         let _ = client
                             .log_message(
                                 MessageType::ERROR,
-                                format!("Failed to sync virtual doc {}: {}", file_name, e),
+                                format!("Failed to sync virtual doc {:?}: {}", target_path, e),
                             )
                             .await;
                     }
@@ -661,7 +645,7 @@ impl SubLspManager {
                             let _ = client
                                 .log_message(
                                     MessageType::ERROR,
-                                    format!("Failed to save virtual doc {}: {}", file_name, e),
+                                    format!("Failed to save virtual doc {:?}: {}", target_path, e),
                                 )
                                 .await;
                         }

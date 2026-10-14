@@ -368,10 +368,25 @@ impl LanguageServer for Backend {
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
         let uri = params.text_document.uri;
 
-        let text = match self.document_map.get(&uri) {
-            Some(doc) => doc.clone(),
-            None => return,
+        // When saved to disk, read directly from disk or params.text to ensure we have the latest content
+        let text = if let Some(t) = params.text {
+            t
+        } else if let Ok(path) = uri.to_file_path() {
+            match tokio::fs::read_to_string(&path).await {
+                Ok(content) => content,
+                Err(_) => match self.document_map.get(&uri) {
+                    Some(doc) => doc.clone(),
+                    None => return,
+                },
+            }
+        } else {
+            match self.document_map.get(&uri) {
+                Some(doc) => doc.clone(),
+                None => return,
+            }
         };
+
+        self.document_map.insert(uri.clone(), text.clone());
 
         let workspace_root = self.workspace_root.lock().unwrap().clone();
         let client = self.client.clone();
@@ -421,6 +436,57 @@ impl LanguageServer for Backend {
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
         let line = params.text_document_position_params.position.line;
         let character = params.text_document_position_params.position.character;
+        let uri = &params.text_document_position_params.text_document.uri;
+
+        // Check if hover is on a noweb chunk reference or header
+        if let Some(doc_text) = self.document_map.get(uri) {
+            let symbols = parse_chunk_symbols(&doc_text);
+            let graph = parser::build_chunk_dependency_graph(&symbols);
+
+            for symbol in &symbols {
+                if symbol.line_num == line as usize {
+                    let start = symbol.start_col;
+                    let end = symbol.start_col + symbol.full_length;
+                    if (character as usize) >= start
+                        && (character as usize) <= end
+                        && let Some(name) = &symbol.name
+                    {
+                        let mut info = format!("### Noweb Code Chunk: `{}`\n", name);
+                            if let Some(defs) = graph.definitions.get(name) {
+                                let lines: Vec<String> =
+                                    defs.iter().map(|l| format!("line {}", l + 1)).collect();
+                                info.push_str(&format!("- **Defined at**: {}\n", lines.join(", ")));
+                            }
+                            if let Some(users) = graph.used_in.get(name) {
+                                let mut user_list: Vec<String> = users.iter().cloned().collect();
+                                user_list.sort();
+                                info.push_str(&format!(
+                                    "- **Used in**: `{}`\n",
+                                    user_list.join("`, `")
+                                ));
+                            } else {
+                                info.push_str("- **Used in**: *(not referenced - plain text)*\n");
+                            }
+                            return Ok(Some(Hover {
+                                contents: HoverContents::Markup(MarkupContent {
+                                    kind: MarkupKind::Markdown,
+                                    value: info,
+                                }),
+                                range: Some(Range {
+                                    start: Position {
+                                        line,
+                                        character: start as u32,
+                                    },
+                                    end: Position {
+                                        line,
+                                        character: end as u32,
+                                    },
+                                }),
+                            }));
+                        }
+                    }
+                }
+        }
 
         let virtual_pos = self
             .sub_lsp_manager
@@ -514,10 +580,10 @@ impl LanguageServer for Backend {
 
         // 1. Gather noweb symbols
         for symbol in &symbols {
-            let token_type = if symbol.kind == ChunkSymbolKind::Header {
-                14 // MACRO
-            } else {
-                15 // KEYWORD
+            let token_type = match symbol.kind {
+                ChunkSymbolKind::Header => 14,    // MACRO
+                ChunkSymbolKind::Reference => 14, // MACRO
+                ChunkSymbolKind::Terminator => 15, // KEYWORD
             };
             absolute_tokens.push(AbsoluteToken {
                 line: symbol.line_num,
