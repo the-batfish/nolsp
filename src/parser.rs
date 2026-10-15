@@ -1,12 +1,14 @@
+use crate::config::NolspConfig;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
-#[derive(PartialEq, Clone, Copy)]
+#[derive(PartialEq, Clone, Copy, Debug)]
 pub enum ChunkSymbolKind {
     Header,
+    Reference,
     Terminator,
 }
 
@@ -49,10 +51,210 @@ pub fn parse_chunk_symbols(content: &str) -> Vec<ChunkSymbols> {
 
                 inside_code_block = true;
             }
+        } else {
+            // inside_code_block is true: check for chunk references (<<name>>)
+            let mut search_from = 0;
+            while let Some(start_rel) = line[search_from..].find("<<") {
+                let start_idx = search_from + start_rel;
+                if let Some(end_rel) = line[(start_idx + 2)..].find(">>") {
+                    let end_idx = start_idx + 2 + end_rel;
+                    // Ensure it is not a header definition inside a code block
+                    if !line[end_idx..].starts_with(">>=") {
+                        let name = line[(start_idx + 2)..end_idx].to_string();
+                        let full_length = end_idx + 2 - start_idx;
+                        symbols.push(ChunkSymbols {
+                            name: Some(name),
+                            kind: ChunkSymbolKind::Reference,
+                            line_num: line_index,
+                            start_col: start_idx,
+                            full_length,
+                        });
+                    }
+                    search_from = end_idx + 2;
+                } else {
+                    break;
+                }
+            }
         }
     }
 
     symbols
+}
+
+#[derive(Debug, Default)]
+pub struct ChunkDependencyGraph {
+    /// Maps each chunk name to the line numbers where it is defined (as headers).
+    pub definitions: HashMap<String, Vec<usize>>,
+    /// Maps each chunk name to the set of chunk names it references.
+    pub references: HashMap<String, HashSet<String>>,
+    /// Inverse map: maps each chunk name to the set of parent chunk names that reference it ("used in").
+    pub used_in: HashMap<String, HashSet<String>>,
+}
+
+pub fn build_chunk_dependency_graph(symbols: &[ChunkSymbols]) -> ChunkDependencyGraph {
+    let mut graph = ChunkDependencyGraph::default();
+    let mut current_chunk: Option<String> = None;
+
+    for symbol in symbols {
+        match symbol.kind {
+            ChunkSymbolKind::Header => {
+                if let Some(name) = &symbol.name {
+                    graph
+                        .definitions
+                        .entry(name.clone())
+                        .or_default()
+                        .push(symbol.line_num);
+                    current_chunk = Some(name.clone());
+                }
+            }
+            ChunkSymbolKind::Reference => {
+                if let (Some(ref_name), Some(current)) = (&symbol.name, &current_chunk) {
+                    graph
+                        .references
+                        .entry(current.clone())
+                        .or_default()
+                        .insert(ref_name.clone());
+                    graph
+                        .used_in
+                        .entry(ref_name.clone())
+                        .or_default()
+                        .insert(current.clone());
+                }
+            }
+            ChunkSymbolKind::Terminator => {
+                current_chunk = None;
+            }
+        }
+    }
+
+    graph
+}
+
+#[allow(dead_code)]
+pub fn get_reachable_chunks(
+    graph: &ChunkDependencyGraph,
+    root_chunks: &HashSet<String>,
+) -> HashSet<String> {
+    let mut reachable = HashSet::new();
+    let mut queue = std::collections::VecDeque::new();
+
+    for root in root_chunks {
+        reachable.insert(root.clone());
+        queue.push_back(root.clone());
+    }
+
+    while let Some(parent) = queue.pop_front() {
+        if let Some(children) = graph.references.get(&parent) {
+            for child in children {
+                if reachable.insert(child.clone()) {
+                    queue.push_back(child.clone());
+                }
+            }
+        }
+    }
+
+    reachable
+}
+
+/// Infers the language for each chunk defined in the document.
+///
+/// Rules:
+/// 1. Root file chunks inherit their language from their file extension / canonical configuration.
+/// 2. For each named chunk:
+///    - Traces all root file chunks that transitively reference this chunk (via `used_in`).
+///    - Collects the set of distinct canonical languages of those root file chunks.
+///    - If all referencing roots resolve to the exact same canonical language (e.g. both
+///      `main.c` and `header.h` resolve to `"c"`), the named chunk inherits that language.
+///    - If referencing roots resolve to multiple distinct languages (e.g. `"c"` and `"python"`,
+///      or `"c"` and `"cpp"`), the language association is discarded (treated as syntax-agnostic / plain text).
+///    - If the named chunk is never referenced by any root chunk, it is plain text.
+pub fn infer_chunk_languages(
+    graph: &ChunkDependencyGraph,
+    config: &NolspConfig,
+) -> HashMap<String, String> {
+    let mut chunk_languages = HashMap::new();
+
+    // 1. Identify all root file chunks and their canonical languages
+    let mut root_languages = HashMap::new();
+    for name in graph.definitions.keys() {
+        if let Some(lang) = config.resolve_language(name) {
+            root_languages.insert(name.clone(), lang);
+        }
+    }
+
+    // 2. Infer language for every defined chunk
+    for name in graph.definitions.keys() {
+        // If this chunk is itself a root file chunk:
+        if let Some(lang) = root_languages.get(name) {
+            chunk_languages.insert(name.clone(), lang.clone());
+            continue;
+        }
+
+        // For named chunks: trace backwards through `used_in` to find all ancestor root chunks
+        let mut referencing_root_languages = HashSet::new();
+        let mut visited = HashSet::new();
+        let mut queue = std::collections::VecDeque::new();
+
+        queue.push_back(name.clone());
+        visited.insert(name.clone());
+
+        while let Some(current) = queue.pop_front() {
+            if let Some(parents) = graph.used_in.get(&current) {
+                for parent in parents {
+                    if let Some(root_lang) = root_languages.get(parent) {
+                        referencing_root_languages.insert(root_lang.clone());
+                    }
+                    if visited.insert(parent.clone()) {
+                        queue.push_back(parent.clone());
+                    }
+                }
+            }
+        }
+
+        // Apply compatibility policy:
+        // - Exactly 1 distinct canonical language: compatible -> inherit
+        // - More than 1 distinct canonical language: conflicting -> discard (plain text)
+        // - 0 distinct canonical languages: unreferenced -> plain text
+        if referencing_root_languages.len() == 1 {
+            let lang = referencing_root_languages.into_iter().next().unwrap();
+            chunk_languages.insert(name.clone(), lang);
+        }
+    }
+
+    chunk_languages
+}
+
+/// Returns the name of the code chunk enclosing the given line (0-indexed).
+/// If `line` is outside any code chunk (e.g. in documentation/prose), returns None.
+pub fn get_chunk_enclosing_line(symbols: &[ChunkSymbols], line: usize) -> Option<&str> {
+    let mut current_chunk: Option<(&str, usize)> = None;
+
+    for symbol in symbols {
+        match symbol.kind {
+            ChunkSymbolKind::Header => {
+                if let Some(name) = &symbol.name {
+                    current_chunk = Some((name.as_str(), symbol.line_num));
+                }
+            }
+            ChunkSymbolKind::Terminator => {
+                if let Some((name, start_line)) = current_chunk {
+                    if line >= start_line && line <= symbol.line_num {
+                        return Some(name);
+                    }
+                }
+                current_chunk = None;
+            }
+            ChunkSymbolKind::Reference => {}
+        }
+    }
+
+    if let Some((name, start_line)) = current_chunk {
+        if line >= start_line {
+            return Some(name);
+        }
+    }
+
+    None
 }
 
 fn get_notangle_cmd() -> PathBuf {
@@ -82,19 +284,14 @@ pub async fn create_virtual_docs(
     workspace_root: &Path,
     noweb_content: &str,
 ) -> Result<HashMap<PathBuf, Vec<(usize, isize)>>, std::io::Error> {
-    // Gather up all the chunk names and keep only the unique ones
-    let mut unique_names = HashSet::<String>::new();
+    let graph = build_chunk_dependency_graph(symbols);
 
-    for symbol in symbols {
-        if let (ChunkSymbolKind::Header, Some(name)) = (symbol.kind, &symbol.name) {
-            unique_names.insert(name.clone());
-        }
-    }
-
-    // Get rid of all the chunk names that aren't file names
-    let unique_file_names: HashSet<String> = unique_names
-        .into_iter()
+    // Identify root file chunks: chunks that have a file extension
+    let root_file_names: HashSet<String> = graph
+        .definitions
+        .keys()
         .filter(|s| Path::new(s).extension().is_some())
+        .cloned()
         .collect();
 
     // Write noweb in-memory content to a temporary file in .nolsp/tmp/temp.nw
@@ -107,7 +304,7 @@ pub async fn create_virtual_docs(
 
     let mut mappings = HashMap::new();
 
-    for file_name in unique_file_names {
+    for file_name in root_file_names {
         // Making the virtual directory where all the virtual documents will live
         let target_path = workspace_root
             .join(".nolsp")
@@ -199,4 +396,305 @@ pub async fn create_virtual_docs(
     }
 
     Ok(mappings)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_chunk_references() {
+        let content = r#"
+<<currencies>>=
+currencies = ["botcoin"]
+@
+
+<<backend.py>>=
+import codecs
+<<currencies>>
+@
+"#;
+        let symbols = parse_chunk_symbols(content);
+
+        // Find reference symbol
+        let ref_sym = symbols
+            .iter()
+            .find(|s| s.kind == ChunkSymbolKind::Reference);
+        assert!(ref_sym.is_some());
+        let ref_sym = ref_sym.unwrap();
+        assert_eq!(ref_sym.name.as_deref(), Some("currencies"));
+    }
+
+    #[test]
+    fn test_build_chunk_dependency_graph() {
+        let content = r#"
+<<credentials>>=
+pool="mypool"
+@
+
+<<currencies>>=
+currencies = ["botcoin"]
+@
+
+<<backend.py>>=
+import codecs
+<<currencies>>
+@
+"#;
+        let symbols = parse_chunk_symbols(content);
+        let graph = build_chunk_dependency_graph(&symbols);
+
+        assert!(graph.definitions.contains_key("credentials"));
+        assert!(graph.definitions.contains_key("currencies"));
+        assert!(graph.definitions.contains_key("backend.py"));
+
+        // backend.py references currencies
+        assert!(
+            graph
+                .references
+                .get("backend.py")
+                .unwrap()
+                .contains("currencies")
+        );
+        // currencies is used in backend.py
+        assert!(
+            graph
+                .used_in
+                .get("currencies")
+                .unwrap()
+                .contains("backend.py")
+        );
+
+        // credentials is not referenced
+        assert!(!graph.used_in.contains_key("credentials"));
+    }
+
+    #[test]
+    fn test_get_reachable_chunks() {
+        let content = r#"
+<<orphan>>=
+x = 1
+@
+
+<<leaf>>=
+y = 2
+@
+
+<<middle>>=
+<<leaf>>
+@
+
+<<app.py>>=
+<<middle>>
+@
+"#;
+        let symbols = parse_chunk_symbols(content);
+        let graph = build_chunk_dependency_graph(&symbols);
+
+        let mut roots = HashSet::new();
+        roots.insert("app.py".to_string());
+
+        let reachable = get_reachable_chunks(&graph, &roots);
+        assert!(reachable.contains("app.py"));
+        assert!(reachable.contains("middle"));
+        assert!(reachable.contains("leaf"));
+        assert!(!reachable.contains("orphan"));
+    }
+
+    #[test]
+    fn test_example_nw_dependency_and_reachability() {
+        let example_path = std::path::Path::new("../testing/example.nw");
+        if !example_path.exists() {
+            return;
+        }
+        let content = std::fs::read_to_string(example_path).unwrap();
+        let symbols = parse_chunk_symbols(&content);
+        let graph = build_chunk_dependency_graph(&symbols);
+
+        assert!(graph.definitions.contains_key("currencies"));
+        assert!(graph.definitions.contains_key("credentials"));
+        assert!(graph.definitions.contains_key("backend.py"));
+
+        // currencies is referenced in backend.py
+        assert!(
+            graph
+                .references
+                .get("backend.py")
+                .unwrap()
+                .contains("currencies")
+        );
+        assert!(
+            graph
+                .used_in
+                .get("currencies")
+                .unwrap()
+                .contains("backend.py")
+        );
+
+        // credentials is unreferenced
+        assert!(!graph.used_in.contains_key("credentials"));
+
+        let roots: HashSet<String> = graph
+            .definitions
+            .keys()
+            .filter(|s| Path::new(s).extension().is_some())
+            .cloned()
+            .collect();
+
+        assert!(roots.contains("backend.py"));
+        assert!(roots.contains("hello.c"));
+
+        let reachable = get_reachable_chunks(&graph, &roots);
+        assert!(reachable.contains("currencies"));
+        assert!(!reachable.contains("credentials"));
+    }
+
+    #[tokio::test]
+    async fn test_create_virtual_docs_plain_text_policy() {
+        let example_path = std::path::Path::new("../testing/example.nw");
+        if !example_path.exists() {
+            return;
+        }
+        let content = std::fs::read_to_string(example_path).unwrap();
+        let symbols = parse_chunk_symbols(&content);
+
+        let temp_dir = std::env::temp_dir().join("nolsp_test_virtual_docs");
+        let mappings = create_virtual_docs(&symbols, &temp_dir, &content)
+            .await
+            .unwrap();
+
+        // backend.py should exist in mappings
+        let backend_path = temp_dir.join(".nolsp").join("virtual").join("backend.py");
+        assert!(mappings.contains_key(&backend_path));
+
+        // credentials (unreferenced named chunk) should NOT exist in mappings
+        let credentials_path = temp_dir.join(".nolsp").join("virtual").join("credentials");
+        assert!(!mappings.contains_key(&credentials_path));
+
+        // currencies lines should be included in backend.py's mapping
+        let backend_mappings = mappings.get(&backend_path).unwrap();
+        // line 30 of example.nw (0-indexed: 29) is currencies = [...]
+        let maps_currencies = backend_mappings
+            .iter()
+            .any(|&(orig_line, _)| orig_line == 29);
+        assert!(
+            maps_currencies,
+            "currencies line (29) should be mapped in virtual/backend.py"
+        );
+
+        // Clean up temp dir
+        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+    }
+
+    #[test]
+    fn test_infer_chunk_languages_compatible_c_and_h() {
+        let content = r#"
+<<shared_buffer>>=
+char buffer[1024];
+@
+
+<<main.c>>=
+<<shared_buffer>>
+int main() { return 0; }
+@
+
+<<header.h>>=
+<<shared_buffer>>
+@
+"#;
+        let symbols = parse_chunk_symbols(content);
+        let graph = build_chunk_dependency_graph(&symbols);
+        let config = NolspConfig::default().with_defaults();
+        let langs = infer_chunk_languages(&graph, &config);
+
+        assert_eq!(langs.get("main.c").map(|s| s.as_str()), Some("c"));
+        assert_eq!(langs.get("header.h").map(|s| s.as_str()), Some("c"));
+        // Both main.c and header.h are "c", so shared_buffer is compatible and inherits "c"
+        assert_eq!(langs.get("shared_buffer").map(|s| s.as_str()), Some("c"));
+    }
+
+    #[test]
+    fn test_infer_chunk_languages_conflicting_c_and_python() {
+        let content = r#"
+<<polyglot>>=
+/* or # comment */
+@
+
+<<main.c>>=
+<<polyglot>>
+@
+
+<<script.py>>=
+<<polyglot>>
+@
+"#;
+        let symbols = parse_chunk_symbols(content);
+        let graph = build_chunk_dependency_graph(&symbols);
+        let config = NolspConfig::default().with_defaults();
+        let langs = infer_chunk_languages(&graph, &config);
+
+        assert_eq!(langs.get("main.c").map(|s| s.as_str()), Some("c"));
+        assert_eq!(langs.get("script.py").map(|s| s.as_str()), Some("python"));
+        // polyglot is referenced by both C and Python -> conflicting, discarded as plain text!
+        assert_eq!(langs.get("polyglot"), None);
+    }
+
+    #[test]
+    fn test_infer_chunk_languages_conflicting_c_and_cpp() {
+        let content = r#"
+<<interop_struct>>=
+struct Data { int x; };
+@
+
+<<main.c>>=
+<<interop_struct>>
+@
+
+<<main.cpp>>=
+<<interop_struct>>
+@
+"#;
+        let symbols = parse_chunk_symbols(content);
+        let graph = build_chunk_dependency_graph(&symbols);
+        let config = NolspConfig::default().with_defaults();
+        let langs = infer_chunk_languages(&graph, &config);
+
+        assert_eq!(langs.get("main.c").map(|s| s.as_str()), Some("c"));
+        assert_eq!(langs.get("main.cpp").map(|s| s.as_str()), Some("cpp"));
+        // C and C++ are distinct languages -> discarded as plain text!
+        assert_eq!(langs.get("interop_struct"), None);
+    }
+
+    #[test]
+    fn test_infer_chunk_languages_transitive_and_unreferenced() {
+        let content = r#"
+<<orphan>>=
+int x = 1;
+@
+
+<<step2>>=
+y = x + 1
+@
+
+<<step1>>=
+x = 10
+<<step2>>
+@
+
+<<backend.py>>=
+<<step1>>
+@
+"#;
+        let symbols = parse_chunk_symbols(content);
+        let graph = build_chunk_dependency_graph(&symbols);
+        let config = NolspConfig::default().with_defaults();
+        let langs = infer_chunk_languages(&graph, &config);
+
+        assert_eq!(langs.get("backend.py").map(|s| s.as_str()), Some("python"));
+        // Transitive propagation: backend.py -> step1 -> step2
+        assert_eq!(langs.get("step1").map(|s| s.as_str()), Some("python"));
+        assert_eq!(langs.get("step2").map(|s| s.as_str()), Some("python"));
+        // orphan is unreferenced -> plain text (None)
+        assert_eq!(langs.get("orphan"), None);
+    }
 }

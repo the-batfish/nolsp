@@ -53,6 +53,13 @@ fn get_semantic_tokens_legend() -> SemanticTokensLegend {
     }
 }
 
+pub enum ChunkLanguagesNotification {}
+
+impl tower_lsp::lsp_types::notification::Notification for ChunkLanguagesNotification {
+    const METHOD: &'static str = "nolsp/chunkLanguages";
+    type Params = serde_json::Value;
+}
+
 struct Backend {
     client: Client,
     document_map: DashMap<Url, String>,
@@ -278,6 +285,16 @@ impl LanguageServer for Backend {
         tokio::spawn(async move {
             if let (Some(root), Ok(_noweb_file)) = (workspace_root, uri.to_file_path()) {
                 let symbols = parse_chunk_symbols(&text);
+                let graph = parser::build_chunk_dependency_graph(&symbols);
+                let chunk_languages = parser::infer_chunk_languages(&graph, &config);
+
+                let _ = client
+                    .send_notification::<ChunkLanguagesNotification>(serde_json::json!({
+                        "uri": uri.to_string(),
+                        "languages": chunk_languages,
+                    }))
+                    .await;
+
                 match parser::create_virtual_docs(&symbols, &root, &text).await {
                     Err(e) => {
                         client
@@ -330,6 +347,16 @@ impl LanguageServer for Backend {
             tokio::spawn(async move {
                 if let (Some(root), Ok(_noweb_file)) = (workspace_root, uri.to_file_path()) {
                     let symbols = parse_chunk_symbols(&new_text);
+                    let graph = parser::build_chunk_dependency_graph(&symbols);
+                    let chunk_languages = parser::infer_chunk_languages(&graph, &config);
+
+                    let _ = client
+                        .send_notification::<ChunkLanguagesNotification>(serde_json::json!({
+                            "uri": uri.to_string(),
+                            "languages": chunk_languages,
+                        }))
+                        .await;
+
                     match parser::create_virtual_docs(&symbols, &root, &new_text).await {
                         Err(e) => {
                             client
@@ -368,10 +395,25 @@ impl LanguageServer for Backend {
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
         let uri = params.text_document.uri;
 
-        let text = match self.document_map.get(&uri) {
-            Some(doc) => doc.clone(),
-            None => return,
+        // When saved to disk, read directly from disk or params.text to ensure we have the latest content
+        let text = if let Some(t) = params.text {
+            t
+        } else if let Ok(path) = uri.to_file_path() {
+            match tokio::fs::read_to_string(&path).await {
+                Ok(content) => content,
+                Err(_) => match self.document_map.get(&uri) {
+                    Some(doc) => doc.clone(),
+                    None => return,
+                },
+            }
+        } else {
+            match self.document_map.get(&uri) {
+                Some(doc) => doc.clone(),
+                None => return,
+            }
         };
+
+        self.document_map.insert(uri.clone(), text.clone());
 
         let workspace_root = self.workspace_root.lock().unwrap().clone();
         let client = self.client.clone();
@@ -387,6 +429,16 @@ impl LanguageServer for Backend {
         tokio::spawn(async move {
             if let (Some(root), Ok(_noweb_file)) = (workspace_root, uri.to_file_path()) {
                 let symbols = parse_chunk_symbols(&text);
+                let graph = parser::build_chunk_dependency_graph(&symbols);
+                let chunk_languages = parser::infer_chunk_languages(&graph, &config);
+
+                let _ = client
+                    .send_notification::<ChunkLanguagesNotification>(serde_json::json!({
+                        "uri": uri.to_string(),
+                        "languages": chunk_languages,
+                    }))
+                    .await;
+
                 match parser::create_virtual_docs(&symbols, &root, &text).await {
                     Err(e) => {
                         client
@@ -421,10 +473,80 @@ impl LanguageServer for Backend {
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
         let line = params.text_document_position_params.position.line;
         let character = params.text_document_position_params.position.character;
+        let uri = &params.text_document_position_params.text_document.uri;
 
-        let virtual_pos = self
-            .sub_lsp_manager
-            .find_virtual_pos(line as usize, character as usize);
+        let doc_text = match self.document_map.get(uri) {
+            Some(doc) => doc.clone(),
+            None => return Ok(None),
+        };
+
+        let symbols = parse_chunk_symbols(&doc_text);
+        let graph = parser::build_chunk_dependency_graph(&symbols);
+        let config = self.config.read().unwrap().clone();
+        let chunk_languages = parser::infer_chunk_languages(&graph, &config);
+
+        // Check if hover is on a noweb chunk reference or header
+        for symbol in &symbols {
+            if symbol.line_num == line as usize {
+                let start = symbol.start_col;
+                let end = symbol.start_col + symbol.full_length;
+                if (character as usize) >= start
+                    && (character as usize) <= end
+                    && let Some(name) = &symbol.name
+                {
+                    let mut info = format!("### Noweb Code Chunk: `{}`\n", name);
+                    if let Some(lang) = chunk_languages.get(name) {
+                        info.push_str(&format!("- **Language**: `{}`\n", lang));
+                    } else {
+                        info.push_str("- **Language**: *(plain text)*\n");
+                    }
+                    if let Some(defs) = graph.definitions.get(name) {
+                        let lines: Vec<String> =
+                            defs.iter().map(|l| format!("line {}", l + 1)).collect();
+                        info.push_str(&format!("- **Defined at**: {}\n", lines.join(", ")));
+                    }
+                    if let Some(users) = graph.used_in.get(name) {
+                        let mut user_list: Vec<String> = users.iter().cloned().collect();
+                        user_list.sort();
+                        info.push_str(&format!("- **Used in**: `{}`\n", user_list.join("`, `")));
+                    } else {
+                        info.push_str("- **Used in**: *(not referenced - plain text)*\n");
+                    }
+                    return Ok(Some(Hover {
+                        contents: HoverContents::Markup(MarkupContent {
+                            kind: MarkupKind::Markdown,
+                            value: info,
+                        }),
+                        range: Some(Range {
+                            start: Position {
+                                line,
+                                character: start as u32,
+                            },
+                            end: Position {
+                                line,
+                                character: end as u32,
+                            },
+                        }),
+                    }));
+                }
+            }
+        }
+
+        // Code-level hover: check if line is inside an active language chunk
+        let enclosing_chunk = parser::get_chunk_enclosing_line(&symbols, line as usize);
+        let chunk_lang = match enclosing_chunk {
+            Some(name) => match chunk_languages.get(name) {
+                Some(lang) => Some(lang.as_str()),
+                None => return Ok(None), // Discarded/plain-text chunk: do not forward to sub-LSP
+            },
+            None => return Ok(None), // Outside code chunks (prose): do not forward to sub-LSP
+        };
+
+        let virtual_pos = self.sub_lsp_manager.find_virtual_pos_for_lang(
+            line as usize,
+            character as usize,
+            chunk_lang,
+        );
         let (sub_client, doc_uri, virtual_line, virtual_char) = match virtual_pos {
             Some(pos) => pos,
             None => {
@@ -502,6 +624,10 @@ impl LanguageServer for Backend {
         let symbols: Vec<ChunkSymbols> = parse_chunk_symbols(&text);
         crate::sub_lsp::log_debug(&format!("Found {} noweb symbols", symbols.len()));
 
+        let config = self.config.read().unwrap().clone();
+        let graph = parser::build_chunk_dependency_graph(&symbols);
+        let chunk_languages = parser::infer_chunk_languages(&graph, &config);
+
         struct AbsoluteToken {
             line: usize,
             col: usize,
@@ -514,10 +640,10 @@ impl LanguageServer for Backend {
 
         // 1. Gather noweb symbols
         for symbol in &symbols {
-            let token_type = if symbol.kind == ChunkSymbolKind::Header {
-                14 // MACRO
-            } else {
-                15 // KEYWORD
+            let token_type = match symbol.kind {
+                ChunkSymbolKind::Header => 14,     // MACRO
+                ChunkSymbolKind::Reference => 14,  // MACRO
+                ChunkSymbolKind::Terminator => 15, // KEYWORD
             };
             absolute_tokens.push(AbsoluteToken {
                 line: symbol.line_num,
@@ -601,6 +727,24 @@ impl LanguageServer for Backend {
                                     current_line,
                                     current_col,
                                 ) {
+                                    // Ensure token belongs to an active chunk matching this sub_client
+                                    if let Some(enclosing) =
+                                        parser::get_chunk_enclosing_line(&symbols, orig_line)
+                                    {
+                                        if let Some(chunk_lang) = chunk_languages.get(enclosing) {
+                                            if sub_client.language_id != *chunk_lang
+                                                && sub_client.ext != *chunk_lang
+                                            {
+                                                continue;
+                                            }
+                                        } else {
+                                            // Discarded / plain text chunk: do not highlight with sub-LSP
+                                            continue;
+                                        }
+                                    } else {
+                                        continue;
+                                    }
+
                                     // Map token type to the unified legend
                                     let mut mapped_type = 8; // fallback to VARIABLE (index 8)
                                     if let Some(sub_leg) = sub_legend_opt {
@@ -743,9 +887,25 @@ impl LanguageServer for Backend {
         }
 
         // Standard code chunk completion forwarding to sub-LSP
-        let virtual_pos = self
-            .sub_lsp_manager
-            .find_virtual_pos(line as usize, character as usize);
+        let symbols = parse_chunk_symbols(&text);
+        let graph = parser::build_chunk_dependency_graph(&symbols);
+        let config = self.config.read().unwrap().clone();
+        let chunk_languages = parser::infer_chunk_languages(&graph, &config);
+
+        let enclosing_chunk = parser::get_chunk_enclosing_line(&symbols, line as usize);
+        let chunk_lang = match enclosing_chunk {
+            Some(name) => match chunk_languages.get(name) {
+                Some(lang) => Some(lang.as_str()),
+                None => return Ok(None), // Discarded/plain-text chunk: do not forward to sub-LSP
+            },
+            None => return Ok(None), // Outside code chunks (prose): do not forward to sub-LSP
+        };
+
+        let virtual_pos = self.sub_lsp_manager.find_virtual_pos_for_lang(
+            line as usize,
+            character as usize,
+            chunk_lang,
+        );
         let (sub_client, doc_uri, virtual_line, virtual_char) = match virtual_pos {
             Some(pos) => pos,
             None => {
@@ -952,5 +1112,32 @@ mod main_tests {
         let data = item.data.unwrap();
         assert_eq!(data["sub_lsp_key"], "rs");
         assert_eq!(data["doc_uri"], "file:///virtual/main.rs");
+    }
+
+    #[test]
+    fn test_example_nw_chunk_languages() {
+        let example_path = std::path::Path::new("../testing/example.nw");
+        if !example_path.exists() {
+            return;
+        }
+        let content = std::fs::read_to_string(example_path).unwrap();
+        let symbols = parse_chunk_symbols(&content);
+        let graph = parser::build_chunk_dependency_graph(&symbols);
+        let config = config::NolspConfig::default().with_defaults();
+        let langs = parser::infer_chunk_languages(&graph, &config);
+
+        // Referenced in backend.py:
+        assert_eq!(langs.get("currencies").map(|s| s.as_str()), Some("python"));
+        assert_eq!(
+            langs.get("data file opening").map(|s| s.as_str()),
+            Some("python")
+        );
+
+        // Unreferenced named chunk:
+        assert_eq!(langs.get("credentials"), None);
+
+        // Root file chunks:
+        assert_eq!(langs.get("backend.py").map(|s| s.as_str()), Some("python"));
+        assert_eq!(langs.get("hello.c").map(|s| s.as_str()), Some("c"));
     }
 }
