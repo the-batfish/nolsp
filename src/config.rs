@@ -117,6 +117,101 @@ impl NolspConfig {
             .and_then(|d| d.doc_language.as_deref())
             .unwrap_or("latex")
     }
+
+    /// Resolves a file name or extension to a canonical language identifier.
+    /// Checks explicit user server configs first, then falls back to built-in canonical mappings.
+    pub fn resolve_language(&self, name_or_ext: &str) -> Option<String> {
+        let ext = Path::new(name_or_ext)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or(name_or_ext);
+
+        if let Some(server) = self.servers.get(ext) {
+            if let Some(lang_id) = &server.language_id {
+                return Some(lang_id.clone());
+            }
+        }
+
+        get_canonical_language(name_or_ext).map(|s| s.to_string())
+    }
+}
+
+/// Built-in canonical language mapping.
+/// Groups compatible extensions (e.g. .c and .h -> "c", .cpp and .hpp -> "cpp")
+/// while keeping distinct languages strictly separated.
+pub fn get_canonical_language(name_or_ext: &str) -> Option<&'static str> {
+    let lower_name = name_or_ext.to_ascii_lowercase();
+
+    // Check exact filenames first
+    match lower_name.as_str() {
+        "makefile" => return Some("make"),
+        "cmakelists.txt" => return Some("cmake"),
+        "dockerfile" => return Some("dockerfile"),
+        "pipfile" => return Some("toml"),
+        _ => {}
+    }
+
+    let ext = Path::new(&lower_name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or(&lower_name);
+
+    match ext {
+        // C family (strictly C)
+        "c" | "h" => Some("c"),
+
+        // C++ family (strictly C++)
+        "cpp" | "cc" | "cxx" | "hpp" | "hh" | "hxx" | "c++" | "h++" => Some("cpp"),
+
+        // Rust
+        "rs" | "rust" => Some("rust"),
+
+        // Python
+        "py" | "python" | "pyw" | "pyi" => Some("python"),
+
+        // Go
+        "go" => Some("go"),
+
+        // TypeScript & TSX
+        "ts" | "typescript" | "mts" | "cts" => Some("typescript"),
+        "tsx" => Some("tsx"),
+
+        // JavaScript & JSX
+        "js" | "javascript" | "mjs" | "cjs" | "jsx" => Some("javascript"),
+
+        // Shell
+        "sh" | "bash" | "zsh" => Some("bash"),
+
+        // Web / Markup / Data
+        "html" | "htm" => Some("html"),
+        "css" => Some("css"),
+        "scss" | "sass" => Some("scss"),
+        "json" => Some("json"),
+        "toml" => Some("toml"),
+        "yaml" | "yml" => Some("yaml"),
+        "xml" => Some("xml"),
+        "sql" => Some("sql"),
+        "r" => Some("r"),
+        "java" => Some("java"),
+        "kt" | "kts" | "kotlin" => Some("kotlin"),
+        "cs" | "csharp" | "c_sharp" => Some("c_sharp"),
+        "lua" => Some("lua"),
+        "zig" => Some("zig"),
+        "f" | "f90" | "f95" | "for" | "fortran" => Some("fortran"),
+        "jl" | "julia" => Some("julia"),
+        "hs" | "haskell" => Some("haskell"),
+        "ml" | "mli" | "ocaml" => Some("ocaml"),
+        "ex" | "exs" | "elixir" => Some("elixir"),
+        "erl" | "hrl" | "erlang" => Some("erlang"),
+        "clj" | "cljs" | "cljc" | "clojure" => Some("clojure"),
+        "nix" => Some("nix"),
+        "cmake" => Some("cmake"),
+        "mk" => Some("make"),
+        "typ" | "typst" => Some("typst"),
+        "md" | "markdown" => Some("markdown"),
+        "tex" | "latex" | "sty" | "cls" => Some("latex"),
+        _ => None,
+    }
 }
 
 pub fn load_config(workspace_root: Option<&Path>) -> NolspConfig {
@@ -194,5 +289,31 @@ mod tests {
         );
         // Default servers should still be populated
         assert!(config.get_server_for_ext("py").is_some());
+    }
+
+    #[test]
+    fn test_canonical_language_resolution() {
+        let config = NolspConfig::default().with_defaults();
+
+        // C and H are compatible under "c"
+        assert_eq!(config.resolve_language("main.c"), Some("c".into()));
+        assert_eq!(config.resolve_language("header.h"), Some("c".into()));
+
+        // C++ is strictly "cpp", not "c"
+        assert_eq!(config.resolve_language("main.cpp"), Some("cpp".into()));
+        assert_eq!(config.resolve_language("header.hpp"), Some("cpp".into()));
+
+        // Python
+        assert_eq!(config.resolve_language("backend.py"), Some("python".into()));
+
+        // Rust
+        assert_eq!(config.resolve_language("lib.rs"), Some("rust".into()));
+
+        // Special filenames
+        assert_eq!(config.resolve_language("Makefile"), Some("make".into()));
+        assert_eq!(config.resolve_language("Pipfile"), Some("toml".into()));
+
+        // Unknown
+        assert_eq!(config.resolve_language("some_chunk_without_ext"), None);
     }
 }

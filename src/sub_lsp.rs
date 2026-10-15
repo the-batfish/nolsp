@@ -655,13 +655,19 @@ impl SubLspManager {
         }
     }
 
-    pub fn find_virtual_pos(
+    pub fn find_virtual_pos_for_lang(
         &self,
         original_line: usize,
         original_col: usize,
+        expected_language: Option<&str>,
     ) -> Option<(Arc<SubLspClient>, Url, usize, usize)> {
         for entry in self.active_clients.iter() {
             let client = entry.value();
+            if let Some(expected) = expected_language {
+                if client.language_id != expected && client.ext != expected {
+                    continue;
+                }
+            }
             for doc_entry in client.line_mappings.iter() {
                 let doc_uri = doc_entry.key();
                 if let Some((v_line, v_col)) =
@@ -672,6 +678,15 @@ impl SubLspManager {
             }
         }
         None
+    }
+
+    #[allow(dead_code)]
+    pub fn find_virtual_pos(
+        &self,
+        original_line: usize,
+        original_col: usize,
+    ) -> Option<(Arc<SubLspClient>, Url, usize, usize)> {
+        self.find_virtual_pos_for_lang(original_line, original_col, None)
     }
 
     pub async fn shutdown(&self) {

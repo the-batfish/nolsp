@@ -1,3 +1,4 @@
+use crate::config::NolspConfig;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use tokio::fs;
@@ -153,6 +154,107 @@ pub fn get_reachable_chunks(
     }
 
     reachable
+}
+
+/// Infers the language for each chunk defined in the document.
+///
+/// Rules:
+/// 1. Root file chunks inherit their language from their file extension / canonical configuration.
+/// 2. For each named chunk:
+///    - Traces all root file chunks that transitively reference this chunk (via `used_in`).
+///    - Collects the set of distinct canonical languages of those root file chunks.
+///    - If all referencing roots resolve to the exact same canonical language (e.g. both
+///      `main.c` and `header.h` resolve to `"c"`), the named chunk inherits that language.
+///    - If referencing roots resolve to multiple distinct languages (e.g. `"c"` and `"python"`,
+///      or `"c"` and `"cpp"`), the language association is discarded (treated as syntax-agnostic / plain text).
+///    - If the named chunk is never referenced by any root chunk, it is plain text.
+pub fn infer_chunk_languages(
+    graph: &ChunkDependencyGraph,
+    config: &NolspConfig,
+) -> HashMap<String, String> {
+    let mut chunk_languages = HashMap::new();
+
+    // 1. Identify all root file chunks and their canonical languages
+    let mut root_languages = HashMap::new();
+    for name in graph.definitions.keys() {
+        if let Some(lang) = config.resolve_language(name) {
+            root_languages.insert(name.clone(), lang);
+        }
+    }
+
+    // 2. Infer language for every defined chunk
+    for name in graph.definitions.keys() {
+        // If this chunk is itself a root file chunk:
+        if let Some(lang) = root_languages.get(name) {
+            chunk_languages.insert(name.clone(), lang.clone());
+            continue;
+        }
+
+        // For named chunks: trace backwards through `used_in` to find all ancestor root chunks
+        let mut referencing_root_languages = HashSet::new();
+        let mut visited = HashSet::new();
+        let mut queue = std::collections::VecDeque::new();
+
+        queue.push_back(name.clone());
+        visited.insert(name.clone());
+
+        while let Some(current) = queue.pop_front() {
+            if let Some(parents) = graph.used_in.get(&current) {
+                for parent in parents {
+                    if let Some(root_lang) = root_languages.get(parent) {
+                        referencing_root_languages.insert(root_lang.clone());
+                    }
+                    if visited.insert(parent.clone()) {
+                        queue.push_back(parent.clone());
+                    }
+                }
+            }
+        }
+
+        // Apply compatibility policy:
+        // - Exactly 1 distinct canonical language: compatible -> inherit
+        // - More than 1 distinct canonical language: conflicting -> discard (plain text)
+        // - 0 distinct canonical languages: unreferenced -> plain text
+        if referencing_root_languages.len() == 1 {
+            let lang = referencing_root_languages.into_iter().next().unwrap();
+            chunk_languages.insert(name.clone(), lang);
+        }
+    }
+
+    chunk_languages
+}
+
+/// Returns the name of the code chunk enclosing the given line (0-indexed).
+/// If `line` is outside any code chunk (e.g. in documentation/prose), returns None.
+pub fn get_chunk_enclosing_line(symbols: &[ChunkSymbols], line: usize) -> Option<&str> {
+    let mut current_chunk: Option<(&str, usize)> = None;
+
+    for symbol in symbols {
+        match symbol.kind {
+            ChunkSymbolKind::Header => {
+                if let Some(name) = &symbol.name {
+                    current_chunk = Some((name.as_str(), symbol.line_num));
+                }
+            }
+            ChunkSymbolKind::Terminator => {
+                if let Some((name, start_line)) = current_chunk {
+                    if line >= start_line && line <= symbol.line_num {
+                        return Some(name);
+                    }
+                }
+                current_chunk = None;
+            }
+            ChunkSymbolKind::Reference => {}
+        }
+    }
+
+    if let Some((name, start_line)) = current_chunk {
+        if line >= start_line {
+            return Some(name);
+        }
+    }
+
+    None
 }
 
 fn get_notangle_cmd() -> PathBuf {
@@ -472,11 +574,127 @@ y = 2
         // currencies lines should be included in backend.py's mapping
         let backend_mappings = mappings.get(&backend_path).unwrap();
         // line 30 of example.nw (0-indexed: 29) is currencies = [...]
-        let maps_currencies = backend_mappings.iter().any(|&(orig_line, _)| orig_line == 29);
-        assert!(maps_currencies, "currencies line (29) should be mapped in virtual/backend.py");
+        let maps_currencies = backend_mappings
+            .iter()
+            .any(|&(orig_line, _)| orig_line == 29);
+        assert!(
+            maps_currencies,
+            "currencies line (29) should be mapped in virtual/backend.py"
+        );
 
         // Clean up temp dir
         let _ = tokio::fs::remove_dir_all(&temp_dir).await;
     }
-}
 
+    #[test]
+    fn test_infer_chunk_languages_compatible_c_and_h() {
+        let content = r#"
+<<shared_buffer>>=
+char buffer[1024];
+@
+
+<<main.c>>=
+<<shared_buffer>>
+int main() { return 0; }
+@
+
+<<header.h>>=
+<<shared_buffer>>
+@
+"#;
+        let symbols = parse_chunk_symbols(content);
+        let graph = build_chunk_dependency_graph(&symbols);
+        let config = NolspConfig::default().with_defaults();
+        let langs = infer_chunk_languages(&graph, &config);
+
+        assert_eq!(langs.get("main.c").map(|s| s.as_str()), Some("c"));
+        assert_eq!(langs.get("header.h").map(|s| s.as_str()), Some("c"));
+        // Both main.c and header.h are "c", so shared_buffer is compatible and inherits "c"
+        assert_eq!(langs.get("shared_buffer").map(|s| s.as_str()), Some("c"));
+    }
+
+    #[test]
+    fn test_infer_chunk_languages_conflicting_c_and_python() {
+        let content = r#"
+<<polyglot>>=
+/* or # comment */
+@
+
+<<main.c>>=
+<<polyglot>>
+@
+
+<<script.py>>=
+<<polyglot>>
+@
+"#;
+        let symbols = parse_chunk_symbols(content);
+        let graph = build_chunk_dependency_graph(&symbols);
+        let config = NolspConfig::default().with_defaults();
+        let langs = infer_chunk_languages(&graph, &config);
+
+        assert_eq!(langs.get("main.c").map(|s| s.as_str()), Some("c"));
+        assert_eq!(langs.get("script.py").map(|s| s.as_str()), Some("python"));
+        // polyglot is referenced by both C and Python -> conflicting, discarded as plain text!
+        assert_eq!(langs.get("polyglot"), None);
+    }
+
+    #[test]
+    fn test_infer_chunk_languages_conflicting_c_and_cpp() {
+        let content = r#"
+<<interop_struct>>=
+struct Data { int x; };
+@
+
+<<main.c>>=
+<<interop_struct>>
+@
+
+<<main.cpp>>=
+<<interop_struct>>
+@
+"#;
+        let symbols = parse_chunk_symbols(content);
+        let graph = build_chunk_dependency_graph(&symbols);
+        let config = NolspConfig::default().with_defaults();
+        let langs = infer_chunk_languages(&graph, &config);
+
+        assert_eq!(langs.get("main.c").map(|s| s.as_str()), Some("c"));
+        assert_eq!(langs.get("main.cpp").map(|s| s.as_str()), Some("cpp"));
+        // C and C++ are distinct languages -> discarded as plain text!
+        assert_eq!(langs.get("interop_struct"), None);
+    }
+
+    #[test]
+    fn test_infer_chunk_languages_transitive_and_unreferenced() {
+        let content = r#"
+<<orphan>>=
+int x = 1;
+@
+
+<<step2>>=
+y = x + 1
+@
+
+<<step1>>=
+x = 10
+<<step2>>
+@
+
+<<backend.py>>=
+<<step1>>
+@
+"#;
+        let symbols = parse_chunk_symbols(content);
+        let graph = build_chunk_dependency_graph(&symbols);
+        let config = NolspConfig::default().with_defaults();
+        let langs = infer_chunk_languages(&graph, &config);
+
+        assert_eq!(langs.get("backend.py").map(|s| s.as_str()), Some("python"));
+        // Transitive propagation: backend.py -> step1 -> step2
+        assert_eq!(langs.get("step1").map(|s| s.as_str()), Some("python"));
+        assert_eq!(langs.get("step2").map(|s| s.as_str()), Some("python"));
+        // orphan is unreferenced -> plain text (None)
+        assert_eq!(langs.get("orphan"), None);
+    }
+}
