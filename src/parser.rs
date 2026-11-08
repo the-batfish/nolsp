@@ -18,6 +18,8 @@ pub struct ChunkSymbols {
     pub line_num: usize,
     pub start_col: usize,
     pub full_length: usize,
+    /// Explicit language tag on a terminator line (e.g. `@ % (python)` → "python").
+    pub language_tag: Option<String>,
 }
 
 pub fn parse_chunk_symbols(content: &str) -> Vec<ChunkSymbols> {
@@ -27,12 +29,14 @@ pub fn parse_chunk_symbols(content: &str) -> Vec<ChunkSymbols> {
     for (line_index, line) in content.lines().enumerate() {
         if line.trim_start().starts_with('@') {
             let start_col = line.find('@').unwrap();
+            let language_tag = extract_language_tag(&line[start_col + 1..]);
             symbols.push(ChunkSymbols {
                 name: None,
                 kind: ChunkSymbolKind::Terminator,
                 line_num: line_index,
                 start_col,
                 full_length: 1,
+                language_tag,
             });
             inside_code_block = false;
         } else if !inside_code_block {
@@ -47,6 +51,7 @@ pub fn parse_chunk_symbols(content: &str) -> Vec<ChunkSymbols> {
                     line_num: line_index,
                     start_col: start_idx,
                     full_length,
+                    language_tag: None,
                 });
 
                 inside_code_block = true;
@@ -68,6 +73,7 @@ pub fn parse_chunk_symbols(content: &str) -> Vec<ChunkSymbols> {
                             line_num: line_index,
                             start_col: start_idx,
                             full_length,
+                            language_tag: None,
                         });
                     }
                     search_from = end_idx + 2;
@@ -81,6 +87,31 @@ pub fn parse_chunk_symbols(content: &str) -> Vec<ChunkSymbols> {
     symbols
 }
 
+/// Returns the byte range `(start, end)` of a parenthesized language tag within `s`, if any.
+/// A tag is a non-empty run of `[A-Za-z0-9_+#-]` enclosed in parentheses.
+fn find_language_tag(s: &str) -> Option<(usize, usize)> {
+    let start = s.find('(')?;
+    let rest = &s[start + 1..];
+    let rel_end = rest.find(')')?;
+    let inner = &rest[..rel_end];
+    let valid = !inner.is_empty()
+        && inner
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '+' | '#' | '-'));
+    if valid {
+        Some((start, start + 1 + rel_end + 1))
+    } else {
+        None
+    }
+}
+
+/// Extracts a parenthesized language tag from terminator trailing text.
+/// e.g. `" % (python)"` → `Some("python")`, `" <!-- (py) -->"` → `Some("py")`.
+pub fn extract_language_tag(s: &str) -> Option<String> {
+    let (start, end) = find_language_tag(s)?;
+    Some(s[start + 1..end - 1].to_ascii_lowercase())
+}
+
 #[derive(Debug, Default)]
 pub struct ChunkDependencyGraph {
     /// Maps each chunk name to the line numbers where it is defined (as headers).
@@ -89,6 +120,8 @@ pub struct ChunkDependencyGraph {
     pub references: HashMap<String, HashSet<String>>,
     /// Inverse map: maps each chunk name to the set of parent chunk names that reference it ("used in").
     pub used_in: HashMap<String, HashSet<String>>,
+    /// Maps a chunk name to an explicit language tag written on its terminator line.
+    pub explicit_languages: HashMap<String, String>,
 }
 
 pub fn build_chunk_dependency_graph(symbols: &[ChunkSymbols]) -> ChunkDependencyGraph {
@@ -122,6 +155,9 @@ pub fn build_chunk_dependency_graph(symbols: &[ChunkSymbols]) -> ChunkDependency
                 }
             }
             ChunkSymbolKind::Terminator => {
+                if let (Some(name), Some(tag)) = (&current_chunk, &symbol.language_tag) {
+                    graph.explicit_languages.insert(name.clone(), tag.clone());
+                }
                 current_chunk = None;
             }
         }
@@ -217,6 +253,27 @@ pub fn infer_chunk_languages(
         // - 0 distinct canonical languages: unreferenced -> plain text
         if referencing_root_languages.len() == 1 {
             let lang = referencing_root_languages.into_iter().next().unwrap();
+            chunk_languages.insert(name.clone(), lang);
+        }
+    }
+
+    chunk_languages
+}
+
+/// Resolves each chunk's language, honoring explicit terminator-line tags first.
+///
+/// Explicit tags (e.g. `@ % (python)`) win over dependency-based inference; chunks
+/// without a tag fall back to [`infer_chunk_languages`]. This is the source of truth
+/// for editor highlighting (semantic tokens, hover, completion, and the
+/// `nolsp/chunkLanguages` notification).
+pub fn resolve_chunk_languages(
+    graph: &ChunkDependencyGraph,
+    config: &NolspConfig,
+) -> HashMap<String, String> {
+    let mut chunk_languages = infer_chunk_languages(graph, config);
+
+    for (name, tag) in &graph.explicit_languages {
+        if let Some(lang) = config.resolve_language(tag) {
             chunk_languages.insert(name.clone(), lang);
         }
     }
@@ -696,5 +753,96 @@ x = 10
         assert_eq!(langs.get("step2").map(|s| s.as_str()), Some("python"));
         // orphan is unreferenced -> plain text (None)
         assert_eq!(langs.get("orphan"), None);
+    }
+
+    #[test]
+    fn test_extract_language_tag() {
+        assert_eq!(extract_language_tag(" % (python)"), Some("python".into()));
+        assert_eq!(
+            extract_language_tag(" <!-- (py) -->"),
+            Some("py".into())
+        );
+        assert_eq!(extract_language_tag(" // (rust)"), Some("rust".into()));
+        assert_eq!(extract_language_tag(" (c_sharp)"), Some("c_sharp".into()));
+        // Uppercase normalized to lowercase
+        assert_eq!(extract_language_tag(" % (Python)"), Some("python".into()));
+        // No tag present
+        assert_eq!(extract_language_tag(" just a comment"), None);
+        assert_eq!(extract_language_tag(""), None);
+        // Empty parens are not a tag
+        assert_eq!(extract_language_tag(" ()"), None);
+    }
+
+    #[test]
+    fn test_resolve_chunk_languages_explicit_tag_wins() {
+        // `shared` is referenced by both C and Python (conflicting → inference discards it),
+        // but an explicit terminator tag forces it to Python.
+        let content = r#"
+<<shared>>=
+x = 1
+@ % (python)
+
+<<main.c>>=
+<<shared>>
+@
+
+<<script.py>>=
+<<shared>>
+@
+"#;
+        let symbols = parse_chunk_symbols(content);
+        let graph = build_chunk_dependency_graph(&symbols);
+        let config = NolspConfig::default().with_defaults();
+
+        // Pure inference would discard `shared` (conflicting languages).
+        let inferred = infer_chunk_languages(&graph, &config);
+        assert_eq!(inferred.get("shared"), None);
+
+        // Resolution honors the explicit tag.
+        let resolved = resolve_chunk_languages(&graph, &config);
+        assert_eq!(resolved.get("shared").map(|s| s.as_str()), Some("python"));
+        assert_eq!(resolved.get("main.c").map(|s| s.as_str()), Some("c"));
+        assert_eq!(
+            resolved.get("script.py").map(|s| s.as_str()),
+            Some("python")
+        );
+    }
+
+    #[test]
+    fn test_resolve_chunk_languages_falls_back_to_inference() {
+        // No tags: resolution is identical to inference.
+        let content = r#"
+<<currencies>>=
+currencies = []
+@
+
+<<backend.py>>=
+<<currencies>>
+@
+"#;
+        let symbols = parse_chunk_symbols(content);
+        let graph = build_chunk_dependency_graph(&symbols);
+        let config = NolspConfig::default().with_defaults();
+
+        let resolved = resolve_chunk_languages(&graph, &config);
+        assert_eq!(
+            resolved.get("currencies").map(|s| s.as_str()),
+            Some("python")
+        );
+    }
+
+    #[test]
+    fn test_parse_chunk_symbols_captures_terminator_tag() {
+        let content = r#"
+<<currencies>>=
+currencies = []
+@ % (python)
+"#;
+        let symbols = parse_chunk_symbols(content);
+        let terminator = symbols
+            .iter()
+            .find(|s| s.kind == ChunkSymbolKind::Terminator)
+            .unwrap();
+        assert_eq!(terminator.language_tag.as_deref(), Some("python"));
     }
 }

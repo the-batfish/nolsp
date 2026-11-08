@@ -5,7 +5,7 @@ mod sub_lsp;
 use parser::{ChunkSymbolKind, ChunkSymbols, parse_chunk_symbols};
 
 use dashmap::DashMap;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
@@ -160,6 +160,67 @@ fn translate_completion_item(
     }));
 }
 
+/// Computes the text edits that add/update/remove language tags on the terminator
+/// lines of extensionless (named) chunks. Only terminator lines that already carry a
+/// tag, or that *should* carry one, are touched — root file chunks and untagged
+/// plain-text chunks are left alone.
+fn compute_language_tag_edits(
+    text: &str,
+    symbols: &[ChunkSymbols],
+    chunk_languages: &HashMap<String, String>,
+    config: &config::NolspConfig,
+) -> Vec<TextEdit> {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut edits = Vec::new();
+    let mut current_chunk: Option<&str> = None;
+
+    for symbol in symbols {
+        match symbol.kind {
+            ChunkSymbolKind::Header => {
+                current_chunk = symbol.name.as_deref();
+            }
+            ChunkSymbolKind::Terminator => {
+                // Only manage extensionless (named) chunks; root chunks already
+                // encode their language in their file-extension name.
+                if let Some(name) = current_chunk
+                    && std::path::Path::new(name).extension().is_none()
+                    && let Some(line) = lines.get(symbol.line_num)
+                {
+                    let trailing = &line[symbol.start_col + 1..];
+                    let existing_tag = parser::extract_language_tag(trailing);
+                    let desired = chunk_languages.get(name);
+
+                    if existing_tag.is_some() || desired.is_some() {
+                        let new_trailing = match desired {
+                            Some(lang) => config.format_tag(lang),
+                            None => String::new(),
+                        };
+                        if new_trailing != trailing {
+                            edits.push(TextEdit {
+                                range: Range {
+                                    start: Position {
+                                        line: symbol.line_num as u32,
+                                        character: (symbol.start_col + 1) as u32,
+                                    },
+                                    end: Position {
+                                        line: symbol.line_num as u32,
+                                        character: line.len() as u32,
+                                    },
+                                },
+                                new_text: new_trailing,
+                            });
+                        }
+                    }
+                }
+                current_chunk = None;
+            }
+            ChunkSymbolKind::Reference => {}
+        }
+    }
+
+    edits
+}
+
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
@@ -230,6 +291,7 @@ impl LanguageServer for Backend {
                     all_commit_characters: None,
                     completion_item: None,
                 }),
+                document_formatting_provider: Some(OneOf::Left(true)),
                 ..Default::default()
             },
             ..Default::default()
@@ -286,7 +348,7 @@ impl LanguageServer for Backend {
             if let (Some(root), Ok(_noweb_file)) = (workspace_root, uri.to_file_path()) {
                 let symbols = parse_chunk_symbols(&text);
                 let graph = parser::build_chunk_dependency_graph(&symbols);
-                let chunk_languages = parser::infer_chunk_languages(&graph, &config);
+                let chunk_languages = parser::resolve_chunk_languages(&graph, &config);
 
                 let _ = client
                     .send_notification::<ChunkLanguagesNotification>(serde_json::json!({
@@ -348,7 +410,7 @@ impl LanguageServer for Backend {
                 if let (Some(root), Ok(_noweb_file)) = (workspace_root, uri.to_file_path()) {
                     let symbols = parse_chunk_symbols(&new_text);
                     let graph = parser::build_chunk_dependency_graph(&symbols);
-                    let chunk_languages = parser::infer_chunk_languages(&graph, &config);
+                    let chunk_languages = parser::resolve_chunk_languages(&graph, &config);
 
                     let _ = client
                         .send_notification::<ChunkLanguagesNotification>(serde_json::json!({
@@ -430,7 +492,7 @@ impl LanguageServer for Backend {
             if let (Some(root), Ok(_noweb_file)) = (workspace_root, uri.to_file_path()) {
                 let symbols = parse_chunk_symbols(&text);
                 let graph = parser::build_chunk_dependency_graph(&symbols);
-                let chunk_languages = parser::infer_chunk_languages(&graph, &config);
+                let chunk_languages = parser::resolve_chunk_languages(&graph, &config);
 
                 let _ = client
                     .send_notification::<ChunkLanguagesNotification>(serde_json::json!({
@@ -483,7 +545,7 @@ impl LanguageServer for Backend {
         let symbols = parse_chunk_symbols(&doc_text);
         let graph = parser::build_chunk_dependency_graph(&symbols);
         let config = self.config.read().unwrap().clone();
-        let chunk_languages = parser::infer_chunk_languages(&graph, &config);
+        let chunk_languages = parser::resolve_chunk_languages(&graph, &config);
 
         // Check if hover is on a noweb chunk reference or header
         for symbol in &symbols {
@@ -626,7 +688,7 @@ impl LanguageServer for Backend {
 
         let config = self.config.read().unwrap().clone();
         let graph = parser::build_chunk_dependency_graph(&symbols);
-        let chunk_languages = parser::infer_chunk_languages(&graph, &config);
+        let chunk_languages = parser::resolve_chunk_languages(&graph, &config);
 
         struct AbsoluteToken {
             line: usize,
@@ -890,7 +952,7 @@ impl LanguageServer for Backend {
         let symbols = parse_chunk_symbols(&text);
         let graph = parser::build_chunk_dependency_graph(&symbols);
         let config = self.config.read().unwrap().clone();
-        let chunk_languages = parser::infer_chunk_languages(&graph, &config);
+        let chunk_languages = parser::resolve_chunk_languages(&graph, &config);
 
         let enclosing_chunk = parser::get_chunk_enclosing_line(&symbols, line as usize);
         let chunk_lang = match enclosing_chunk {
@@ -1025,6 +1087,31 @@ impl LanguageServer for Backend {
 
         Ok(resolved_item)
     }
+
+    async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
+        let uri = params.text_document.uri;
+
+        let text = match self.document_map.get(&uri) {
+            Some(doc) => doc.clone(),
+            None => return Ok(None),
+        };
+
+        let symbols = parse_chunk_symbols(&text);
+        let graph = parser::build_chunk_dependency_graph(&symbols);
+        let config = self.config.read().unwrap().clone();
+
+        // Use pure inference (not resolve) so the formatter writes the canonical tag for
+        // each chunk, independent of any pre-existing (possibly stale) tag.
+        let chunk_languages = parser::infer_chunk_languages(&graph, &config);
+
+        let edits = compute_language_tag_edits(&text, &symbols, &chunk_languages, &config);
+
+        if edits.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(edits))
+        }
+    }
 }
 
 #[tokio::main]
@@ -1139,5 +1226,89 @@ mod main_tests {
         // Root file chunks:
         assert_eq!(langs.get("backend.py").map(|s| s.as_str()), Some("python"));
         assert_eq!(langs.get("hello.c").map(|s| s.as_str()), Some("c"));
+    }
+
+    #[test]
+    fn test_compute_language_tag_edits() {
+        let content = "\
+<<credentials>>=
+pool=1
+@
+
+<<currencies>>=
+currencies = []
+@
+
+<<backend.py>>=
+<<currencies>>
+@
+";
+        let symbols = parse_chunk_symbols(content);
+        let graph = parser::build_chunk_dependency_graph(&symbols);
+        let config = config::NolspConfig::default().with_defaults();
+        let langs = parser::infer_chunk_languages(&graph, &config);
+
+        let edits = compute_language_tag_edits(content, &symbols, &langs, &config);
+
+        // `currencies` (referenced by backend.py) gets a Python tag.
+        // `credentials` is unreferenced → plain text, no tag.
+        // `backend.py` is a root chunk → untouched.
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].new_text, " % (python)");
+
+        // The edit targets the terminator line of `currencies` (the second `@`).
+        let currencies_terminator = content
+            .lines()
+            .enumerate()
+            .filter(|(_, l)| l.trim() == "@")
+            .nth(1)
+            .unwrap()
+            .0;
+        assert_eq!(edits[0].range.start.line as usize, currencies_terminator);
+    }
+
+    #[test]
+    fn test_compute_language_tag_edits_updates_stale_tag() {
+        let content = "\
+<<currencies>>=
+currencies = []
+@ % (py)
+
+<<backend.py>>=
+<<currencies>>
+@
+";
+        let symbols = parse_chunk_symbols(content);
+        let graph = parser::build_chunk_dependency_graph(&symbols);
+        let config = config::NolspConfig::default().with_defaults();
+        let langs = parser::infer_chunk_languages(&graph, &config);
+
+        let edits = compute_language_tag_edits(content, &symbols, &langs, &config);
+
+        // The stale `(py)` tag on `currencies` is rewritten to the canonical `(python)`.
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].new_text, " % (python)");
+    }
+
+    #[test]
+    fn test_compute_language_tag_edits_is_idempotent() {
+        let content = "\
+<<currencies>>=
+currencies = []
+@ % (python)
+
+<<backend.py>>=
+<<currencies>>
+@
+";
+        let symbols = parse_chunk_symbols(content);
+        let graph = parser::build_chunk_dependency_graph(&symbols);
+        let config = config::NolspConfig::default().with_defaults();
+        let langs = parser::infer_chunk_languages(&graph, &config);
+
+        let edits = compute_language_tag_edits(content, &symbols, &langs, &config);
+
+        // Already-correct tags produce no edits.
+        assert!(edits.is_empty());
     }
 }

@@ -110,7 +110,6 @@ impl NolspConfig {
     }
 
     // getter function for document language (fallback to latex)
-    #[allow(dead_code)]
     pub fn get_doc_language(&self) -> &str {
         self.document
             .as_ref()
@@ -133,6 +132,22 @@ impl NolspConfig {
         }
 
         get_canonical_language(name_or_ext).map(|s| s.to_string())
+    }
+
+    /// Formats a chunk-language tag using the configured documentation language's
+    /// comment syntax. The returned string is meant to be appended directly after
+    /// the `@` terminator on a chunk's terminator line.
+    ///
+    /// e.g. `doc_language = "latex"`    → `" % (python)"`
+    ///      `doc_language = "markdown"` → `" <!-- (python) -->"`
+    ///      `doc_language = "typst"`    → `" // (python)"`
+    pub fn format_tag(&self, language_id: &str) -> String {
+        let (open, close) = comment_style_for(self.get_doc_language());
+        if close.is_empty() {
+            format!(" {} ({})", open, language_id)
+        } else {
+            format!(" {} ({}) {}", open, language_id, close)
+        }
     }
 }
 
@@ -211,6 +226,17 @@ pub fn get_canonical_language(name_or_ext: &str) -> Option<&'static str> {
         "md" | "markdown" => Some("markdown"),
         "tex" | "latex" | "sty" | "cls" => Some("latex"),
         _ => None,
+    }
+}
+
+/// Maps a documentation language id to its comment delimiters `(open, close)`.
+/// Used to wrap chunk-language tags so they are invisible in the rendered docs.
+/// Unknown languages fall back to LaTeX's `%` line comment.
+pub fn comment_style_for(doc_language: &str) -> (&'static str, &'static str) {
+    match doc_language {
+        "markdown" | "md" => ("<!--", "-->"),
+        "typst" | "typ" => ("//", ""),
+        _ => ("%", ""),
     }
 }
 
@@ -315,5 +341,34 @@ mod tests {
 
         // Unknown
         assert_eq!(config.resolve_language("some_chunk_without_ext"), None);
+    }
+
+    #[test]
+    fn test_format_tag_comment_styles() {
+        // LaTeX (and unknown) → `%` line comment
+        let latex = NolspConfig::default().with_defaults();
+        assert_eq!(latex.format_tag("python"), " % (python)");
+
+        // Markdown → `<!-- -->`
+        let mut markdown = NolspConfig::default();
+        markdown.document = Some(DocumentConfig {
+            doc_language: Some("markdown".into()),
+        });
+        assert_eq!(markdown.format_tag("python"), " <!-- (python) -->");
+
+        // Typst → `//` line comment
+        let mut typst = NolspConfig::default();
+        typst.document = Some(DocumentConfig {
+            doc_language: Some("typst".into()),
+        });
+        assert_eq!(typst.format_tag("rust"), " // (rust)");
+    }
+
+    #[test]
+    fn test_comment_style_for_fallback() {
+        assert_eq!(comment_style_for("latex"), ("%", ""));
+        assert_eq!(comment_style_for("markdown"), ("<!--", "-->"));
+        assert_eq!(comment_style_for("typst"), ("//", ""));
+        assert_eq!(comment_style_for("unknown"), ("%", ""));
     }
 }
