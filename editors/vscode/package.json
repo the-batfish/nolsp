@@ -1,0 +1,174 @@
+{
+  "name": "nolsp",
+  "description": "Language Server Multiplexer for noweb",
+  "version": "0.7.0",
+  "publisher": "the-batfish",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/the-batfish/nolsp.git"
+  },
+  "activationEvents": [
+    "onLanguage:noweb",
+    "workspaceContains:**/nolsp.toml",
+    "workspaceContains:**/.nolsp.toml"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "noweb",
+        "aliases": [
+          "Noweb",
+          "noweb"
+        ],
+        "extensions": [
+          ".nw",
+          ".noweb"
+        ]
+      }
+    ],
+    "grammars": [
+      {
+        "language": "noweb",
+        "scopeName": "source.noweb",
+        "path": "./syntaxes/noweb.tmLanguage.json",
+        "embeddedLanguages": {
+          "source.python": "python",
+          "source.c": "c",
+          "source.cpp": "cpp",
+          "source.rust": "rust",
+          "source.go": "go",
+          "source.zig": "zig",
+          "source.fortran": "fortran",
+          "source.arm": "arm",
+          "source.java": "java",
+          "source.kotlin": "kotlin",
+          "source.cs": "csharp",
+          "source.scala": "scala",
+          "source.swift": "swift",
+          "source.dart": "dart",
+          "source.ts": "typescript",
+          "source.js": "javascript",
+          "source.tsx": "typescriptreact",
+          "source.ruby": "ruby",
+          "source.php": "php",
+          "source.lua": "lua",
+          "source.perl": "perl",
+          "source.shell": "shellscript",
+          "source.r": "r",
+          "source.julia": "julia",
+          "source.sql": "sql",
+          "source.haskell": "haskell",
+          "source.ocaml": "ocaml",
+          "source.elixir": "elixir",
+          "source.erlang": "erlang",
+          "source.clojure": "clojure",
+          "source.nix": "nix",
+          "text.html.basic": "html",
+          "source.css": "css",
+          "source.css.scss": "scss",
+          "source.json": "json",
+          "source.yaml": "yaml",
+          "source.toml": "toml",
+          "text.xml": "xml",
+          "source.makefile": "makefile",
+          "source.cmake": "cmake",
+          "source.dockerfile": "dockerfile",
+          "source.typst": "typst",
+          "text.html.markdown": "markdown",
+          "text.tex.latex": "latex"
+        }
+      },
+      {
+        "scopeName": "source.noweb.injection",
+        "path": "./syntaxes/noweb.tmLanguage.json",
+        "injectTo": [
+          "text.tex.latex",
+          "text.html.markdown",
+          "source.typst",
+          "text.asciidoc",
+          "text.restructuredtext",
+          "source.org",
+          "text.plain",
+          "text.html.derivative"
+        ],
+        "embeddedLanguages": {
+          "source.python": "python",
+          "source.c": "c",
+          "source.cpp": "cpp",
+          "source.rust": "rust",
+          "source.go": "go",
+          "source.zig": "zig",
+          "source.fortran": "fortran",
+          "source.arm": "arm",
+          "source.java": "java",
+          "source.kotlin": "kotlin",
+          "source.cs": "csharp",
+          "source.scala": "scala",
+          "source.swift": "swift",
+          "source.dart": "dart",
+          "source.ts": "typescript",
+          "source.js": "javascript",
+          "source.tsx": "typescriptreact",
+          "source.ruby": "ruby",
+          "source.php": "php",
+          "source.lua": "lua",
+          "source.perl": "perl",
+          "source.shell": "shellscript",
+          "source.r": "r",
+          "source.julia": "julia",
+          "source.sql": "sql",
+          "source.haskell": "haskell",
+          "source.ocaml": "ocaml",
+          "source.elixir": "elixir",
+          "source.erlang": "erlang",
+          "source.clojure": "clojure",
+          "source.nix": "nix",
+          "text.html.basic": "html",
+          "source.css": "css",
+          "source.css.scss": "scss",
+          "source.json": "json",
+          "source.yaml": "yaml",
+          "source.toml": "toml",
+          "text.xml": "xml",
+          "source.makefile": "makefile",
+          "source.cmake": "cmake",
+          "source.dockerfile": "dockerfile",
+          "source.typst": "typst",
+          "text.html.markdown": "markdown",
+          "text.tex.latex": "latex"
+        }
+      }
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "nolsp",
+      "properties": {
+        "nolsp.serverPath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional custom path to the nolsp executable."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.1",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^10.1.1"
+  }
+}

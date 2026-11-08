@@ -1,0 +1,704 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "noweb",
+  "scopeName": "source.noweb",
+  "injectionSelector": "L:text, L:source",
+  "patterns": [
+    { "include": "#code-chunks" },
+    { "include": "#chunk-terminator" }
+  ],
+  "repository": {
+    "code-chunks": {
+      "patterns": [
+        { "include": "#chunk-python" },
+        { "include": "#chunk-c" },
+        { "include": "#chunk-cpp" },
+        { "include": "#chunk-rust" },
+        { "include": "#chunk-go" },
+        { "include": "#chunk-zig" },
+        { "include": "#chunk-fortran" },
+        { "include": "#chunk-asm" },
+        { "include": "#chunk-java" },
+        { "include": "#chunk-kotlin" },
+        { "include": "#chunk-csharp" },
+        { "include": "#chunk-scala" },
+        { "include": "#chunk-swift" },
+        { "include": "#chunk-dart" },
+        { "include": "#chunk-typescript" },
+        { "include": "#chunk-javascript" },
+        { "include": "#chunk-tsx" },
+        { "include": "#chunk-ruby" },
+        { "include": "#chunk-php" },
+        { "include": "#chunk-lua" },
+        { "include": "#chunk-perl" },
+        { "include": "#chunk-shell" },
+        { "include": "#chunk-r" },
+        { "include": "#chunk-julia" },
+        { "include": "#chunk-sql" },
+        { "include": "#chunk-haskell" },
+        { "include": "#chunk-ocaml" },
+        { "include": "#chunk-elixir" },
+        { "include": "#chunk-erlang" },
+        { "include": "#chunk-clojure" },
+        { "include": "#chunk-nix" },
+        { "include": "#chunk-html" },
+        { "include": "#chunk-css" },
+        { "include": "#chunk-scss" },
+        { "include": "#chunk-json" },
+        { "include": "#chunk-yaml" },
+        { "include": "#chunk-toml" },
+        { "include": "#chunk-xml" },
+        { "include": "#chunk-make" },
+        { "include": "#chunk-cmake" },
+        { "include": "#chunk-dockerfile" },
+        { "include": "#chunk-typst" },
+        { "include": "#chunk-markdown" },
+        { "include": "#chunk-latex" },
+        { "include": "#chunk-generic" }
+      ]
+    },
+    "chunk-python": {
+      "begin": "^\\s*(<<)(.*(?:^py$|^python$|\\.(?:py|pyw|pyi)))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.python",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.python" }
+      ]
+    },
+    "chunk-c": {
+      "begin": "^\\s*(<<)(.*(?:^c$|\\.(?:c|h)))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.c",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.c" }
+      ]
+    },
+    "chunk-cpp": {
+      "begin": "^\\s*(<<)(.*(?:^cpp$|^c\\+\\+$|\\.(?:cpp|cc|cxx|hpp|hh|hxx)))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.cpp",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.cpp" }
+      ]
+    },
+    "chunk-rust": {
+      "begin": "^\\s*(<<)(.*(?:^rust$|\\.rs))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.rust",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.rust" }
+      ]
+    },
+    "chunk-go": {
+      "begin": "^\\s*(<<)(.*(?:^go$|\\.go))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.go",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.go" }
+      ]
+    },
+    "chunk-zig": {
+      "begin": "^\\s*(<<)(.*(?:^zig$|\\.zig))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.zig",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.zig" }
+      ]
+    },
+    "chunk-fortran": {
+      "begin": "^\\s*(<<)(.*(?:^fortran$|\\.(?:f|f90|f95|for)))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.fortran",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.fortran" }
+      ]
+    },
+    "chunk-asm": {
+      "begin": "^\\s*(<<)(.*(?:^asm$|\\.(?:asm|s|S)))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.arm",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.arm" }
+      ]
+    },
+    "chunk-java": {
+      "begin": "^\\s*(<<)(.*(?:^java$|\\.java))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.java",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.java" }
+      ]
+    },
+    "chunk-kotlin": {
+      "begin": "^\\s*(<<)(.*(?:^kotlin$|\\.(?:kt|kts)))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.kotlin",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.kotlin" }
+      ]
+    },
+    "chunk-csharp": {
+      "begin": "^\\s*(<<)(.*(?:^cs$|^csharp$|^c_sharp$|\\.cs))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.cs",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.cs" }
+      ]
+    },
+    "chunk-scala": {
+      "begin": "^\\s*(<<)(.*(?:^scala$|\\.(?:scala|sc)))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.scala",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.scala" }
+      ]
+    },
+    "chunk-swift": {
+      "begin": "^\\s*(<<)(.*(?:^swift$|\\.swift))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.swift",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.swift" }
+      ]
+    },
+    "chunk-dart": {
+      "begin": "^\\s*(<<)(.*(?:^dart$|\\.dart))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.dart",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.dart" }
+      ]
+    },
+    "chunk-typescript": {
+      "begin": "^\\s*(<<)(.*(?:^ts$|^typescript$|\\.(?:ts|mts|cts)))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.ts",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.ts" }
+      ]
+    },
+    "chunk-javascript": {
+      "begin": "^\\s*(<<)(.*(?:^js$|^javascript$|\\.(?:js|mjs|cjs)))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.js",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.js" }
+      ]
+    },
+    "chunk-tsx": {
+      "begin": "^\\s*(<<)(.*(?:^tsx$|\\.tsx))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.tsx",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.tsx" }
+      ]
+    },
+    "chunk-ruby": {
+      "begin": "^\\s*(<<)(.*(?:^rb$|^ruby$|\\.(?:rb|rake)))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.ruby",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.ruby" }
+      ]
+    },
+    "chunk-php": {
+      "begin": "^\\s*(<<)(.*(?:^php$|\\.php))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.php",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.php" }
+      ]
+    },
+    "chunk-lua": {
+      "begin": "^\\s*(<<)(.*(?:^lua$|\\.lua))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.lua",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.lua" }
+      ]
+    },
+    "chunk-perl": {
+      "begin": "^\\s*(<<)(.*(?:^pl$|^perl$|\\.(?:pl|pm)))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.perl",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.perl" }
+      ]
+    },
+    "chunk-shell": {
+      "begin": "^\\s*(<<)(.*(?:^sh$|^bash$|^zsh$|\\.(?:sh|bash|zsh)))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.shell",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.shell" }
+      ]
+    },
+    "chunk-r": {
+      "begin": "^\\s*(<<)(.*(?:^r$|^R$|\\.(?:r|R)))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.r",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.r" }
+      ]
+    },
+    "chunk-julia": {
+      "begin": "^\\s*(<<)(.*(?:^jl$|^julia$|\\.jl))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.julia",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.julia" }
+      ]
+    },
+    "chunk-sql": {
+      "begin": "^\\s*(<<)(.*(?:^sql$|\\.sql))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.sql",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.sql" }
+      ]
+    },
+    "chunk-haskell": {
+      "begin": "^\\s*(<<)(.*(?:^hs$|^haskell$|\\.hs))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.haskell",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.haskell" }
+      ]
+    },
+    "chunk-ocaml": {
+      "begin": "^\\s*(<<)(.*(?:^ml$|^ocaml$|\\.(?:ml|mli)))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.ocaml",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.ocaml" }
+      ]
+    },
+    "chunk-elixir": {
+      "begin": "^\\s*(<<)(.*(?:^ex$|^elixir$|\\.(?:ex|exs)))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.elixir",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.elixir" }
+      ]
+    },
+    "chunk-erlang": {
+      "begin": "^\\s*(<<)(.*(?:^erl$|^erlang$|\\.(?:erl|hrl)))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.erlang",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.erlang" }
+      ]
+    },
+    "chunk-clojure": {
+      "begin": "^\\s*(<<)(.*(?:^clj$|^clojure$|\\.(?:clj|cljs|cljc)))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.clojure",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.clojure" }
+      ]
+    },
+    "chunk-nix": {
+      "begin": "^\\s*(<<)(.*(?:^nix$|\\.nix))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.nix",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.nix" }
+      ]
+    },
+    "chunk-html": {
+      "begin": "^\\s*(<<)(.*(?:^html$|\\.(?:html|htm)))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "text.html.basic",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "text.html.basic" }
+      ]
+    },
+    "chunk-css": {
+      "begin": "^\\s*(<<)(.*(?:^css$|\\.css))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.css",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.css" }
+      ]
+    },
+    "chunk-scss": {
+      "begin": "^\\s*(<<)(.*(?:^scss$|^sass$|\\.(?:scss|sass)))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.css.scss",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.css.scss" }
+      ]
+    },
+    "chunk-json": {
+      "begin": "^\\s*(<<)(.*(?:^json$|\\.json))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.json",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.json" }
+      ]
+    },
+    "chunk-yaml": {
+      "begin": "^\\s*(<<)(.*(?:^yaml$|^yml$|\\.(?:yaml|yml)))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.yaml",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.yaml" }
+      ]
+    },
+    "chunk-toml": {
+      "begin": "^\\s*(<<)(.*(?:^toml$|\\.toml))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.toml",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.toml" }
+      ]
+    },
+    "chunk-xml": {
+      "begin": "^\\s*(<<)(.*(?:^xml$|\\.xml))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "text.xml",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "text.xml" }
+      ]
+    },
+    "chunk-make": {
+      "begin": "^\\s*(<<)(.*(?:^Makefile$|^makefile$|\\.mk))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.makefile",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.makefile" }
+      ]
+    },
+    "chunk-cmake": {
+      "begin": "^\\s*(<<)(.*(?:^cmake$|^CMakeLists\\.txt$|\\.cmake))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.cmake",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.cmake" }
+      ]
+    },
+    "chunk-dockerfile": {
+      "begin": "^\\s*(<<)(.*(?:^dockerfile$|^Dockerfile$|\\.dockerfile))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.dockerfile",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.dockerfile" }
+      ]
+    },
+    "chunk-typst": {
+      "begin": "^\\s*(<<)(.*(?:^typst$|^typ$|\\.typ))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "source.typst",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "source.typst" }
+      ]
+    },
+    "chunk-markdown": {
+      "begin": "^\\s*(<<)(.*(?:^md$|^markdown$|\\.(?:md|markdown)))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "text.html.markdown",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "text.html.markdown" }
+      ]
+    },
+    "chunk-latex": {
+      "begin": "^\\s*(<<)(.*(?:^tex$|^latex$|\\.(?:tex|sty|cls)))(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "contentName": "text.tex.latex",
+      "patterns": [
+        { "include": "#chunk-reference" },
+        { "include": "text.tex.latex" }
+      ]
+    },
+    "chunk-generic": {
+      "begin": "^\\s*(<<)(.+?)(>>=)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      },
+      "end": "^(?=@)",
+      "patterns": [
+        { "include": "#chunk-reference" }
+      ]
+    },
+    "chunk-terminator": {
+      "match": "^(@)(.*)$",
+      "captures": {
+        "1": { "name": "keyword.control.chunk.end.noweb" },
+        "2": { "name": "comment.line.noweb" }
+      }
+    },
+    "chunk-reference": {
+      "match": "(<<)(.*?)(>>)",
+      "captures": {
+        "1": { "name": "keyword.control.tag.noweb" },
+        "2": { "name": "entity.name.function.chunk.noweb" },
+        "3": { "name": "keyword.control.tag.noweb" }
+      }
+    }
+  }
+}

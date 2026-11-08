@@ -20,4 +20,13 @@ target
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
-GEMINI.md
+# Virtual documents generated at runtime by nolsp
+.nolsp/
+
+# VS Code extension build outputs and dependencies
+**/node_modules/
+**/out/
+editors/vscode/bin/
+*.vsix
+
+AGENTS.md
